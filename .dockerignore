@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+data/
+input/
+output/
+outputs/
+web_runs/
+*.log
+초기관리자비밀번호.txt
