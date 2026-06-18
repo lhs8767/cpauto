@@ -2379,13 +2379,23 @@ def extract_simpleworks_quantities_from_text(text: str) -> dict[str, int]:
     return dict(quantities)
 
 
+def get_tesseract_candidates() -> list[str]:
+    return [
+        os.environ.get("TESSERACT_CMD", ""),
+        shutil.which("tesseract") or "",
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    ]
+
+
 def get_tesseract_path() -> str | None:
     tesseract_path = shutil.which("tesseract")
     if tesseract_path:
         return tesseract_path
-    default_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-    if default_tesseract.exists():
-        return str(default_tesseract)
+    for candidate in get_tesseract_candidates():
+        if candidate and Path(candidate).exists():
+            return candidate
     return None
 
 
@@ -2505,9 +2515,10 @@ def parse_simpleworks_table_image(path: Path, tesseract_path: str) -> dict[str, 
 def parse_simpleworks_image(path: Path) -> dict[str, int]:
     tesseract_path = get_tesseract_path()
     if not tesseract_path:
+        checked = ", ".join(candidate for candidate in get_tesseract_candidates() if candidate) or "없음"
         raise ValueError(
             "캡쳐 이미지를 읽으려면 OCR 프로그램인 Tesseract 설치가 필요합니다. "
-            "지금은 심플웍스 엑셀 업로드를 사용해주세요."
+            f"지금은 심플웍스 엑셀 업로드를 사용해주세요. 확인한 경로: {checked} / PATH: {os.environ.get('PATH', '')}"
         )
     table_quantities = parse_simpleworks_table_image(path, tesseract_path)
     if table_quantities:
