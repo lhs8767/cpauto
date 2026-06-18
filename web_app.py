@@ -120,6 +120,16 @@ def backup_sales_files_to_supabase() -> None:
     backup_file_to_supabase("sales_ledger", SALES_LEDGER_PATH)
     backup_file_to_supabase("monthly_sales", MONTHLY_SALES_PATH)
 
+
+def restore_master_file_from_supabase() -> None:
+    if get_local_master_path() is not None:
+        return
+    restore_file_from_supabase("master_file", MASTER_DIR / "기초자료.xlsx")
+
+
+def backup_master_file_to_supabase(source_path: Path) -> None:
+    backup_file_to_supabase("master_file", source_path)
+
 sys.path.insert(0, str(SCRIPTS_DIR))
 from po_automation import create_processed_po, read_master, read_po_lines, write_summary_workbook  # noqa: E402
 
@@ -1476,7 +1486,7 @@ def safe_name(name: str) -> str:
     return Path(name).name.replace("/", "_").replace("\\", "_")
 
 
-def get_saved_master_path() -> Path | None:
+def get_local_master_path() -> Path | None:
     if not MASTER_DIR.exists():
         return None
     files = [
@@ -1487,6 +1497,14 @@ def get_saved_master_path() -> Path | None:
     if not files:
         return None
     return max(files, key=lambda path: path.stat().st_mtime)
+
+
+def get_saved_master_path() -> Path | None:
+    master_path = get_local_master_path()
+    if master_path is not None:
+        return master_path
+    restore_file_from_supabase("master_file", MASTER_DIR / "기초자료.xlsx")
+    return get_local_master_path()
 
 
 def norm_header(value: object) -> str:
@@ -3150,6 +3168,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             MASTER_DIR.mkdir(parents=True, exist_ok=True)
             target_path = MASTER_DIR / name
             target_path.write_bytes(master_bytes)
+            backup_master_file_to_supabase(target_path)
             self.send_html(self.page(build_message("ok", f"기초자료를 저장했습니다: {name}")))
         except Exception as exc:
             self.send_html(self.page(build_message("err", f"기초자료 저장 중 오류가 났습니다: {exc}")), status=500)
@@ -3249,7 +3268,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
             master_bytes = master_item.file.read()
             master_path.write_bytes(master_bytes)
             MASTER_DIR.mkdir(parents=True, exist_ok=True)
-            (MASTER_DIR / master_name).write_bytes(master_bytes)
+            saved_master_path = MASTER_DIR / master_name
+            saved_master_path.write_bytes(master_bytes)
+            backup_master_file_to_supabase(saved_master_path)
         else:
             saved_master = get_saved_master_path()
             if saved_master is None:
