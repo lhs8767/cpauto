@@ -1544,8 +1544,8 @@ def find_master_columns(ws) -> dict[str, int]:
     simple_no_col = find_header_col(ws, ["심플웍스 No", "심플웍스번호", "심플웍스NO", "심플 No", "심플번호"])
     barcode_col = find_header_col(ws, ["바코드"])
     unavailable_col = find_header_col(ws, ["납품불가", "납품불가여부", "제외"])
-    width_col = find_header_col(ws, ["가로(mm)", "가로", "폭", "width", "width_mm"])
-    depth_col = find_header_col(ws, ["세로(mm)", "세로", "깊이", "depth", "depth_mm"])
+    width_col = find_header_col(ws, ["길이 (mm)", "길이(mm)", "길이", "가로(mm)", "가로", "폭", "width", "width_mm"])
+    depth_col = find_header_col(ws, ["넓이 (mm)", "넓이(mm)", "넓이", "세로(mm)", "세로", "깊이", "depth", "depth_mm"])
     height_col = find_header_col(ws, ["높이(mm)", "높이", "height", "height_mm"])
     weight_col = find_header_col(ws, ["무게(kg)", "무게", "중량", "weight", "weight_kg"])
     if unavailable_col is None:
@@ -1584,8 +1584,8 @@ def find_master_columns(ws) -> dict[str, int]:
             barcode_col += 1
         if unavailable_col and unavailable_col >= insert_at:
             unavailable_col += 1
-    width_col = find_header_col(ws, ["가로(mm)", "가로", "폭", "width", "width_mm"])
-    depth_col = find_header_col(ws, ["세로(mm)", "세로", "깊이", "depth", "depth_mm"])
+    width_col = find_header_col(ws, ["길이 (mm)", "길이(mm)", "길이", "가로(mm)", "가로", "폭", "width", "width_mm"])
+    depth_col = find_header_col(ws, ["넓이 (mm)", "넓이(mm)", "넓이", "세로(mm)", "세로", "깊이", "depth", "depth_mm"])
     height_col = find_header_col(ws, ["높이(mm)", "높이", "height", "height_mm"])
     weight_col = find_header_col(ws, ["무게(kg)", "무게", "중량", "weight", "weight_kg"])
     size_columns = [
