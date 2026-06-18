@@ -1356,6 +1356,19 @@ MASTER_PAGE = """<!DOCTYPE html>
       <h1>쿠팡 기초자료 관리</h1>
       <div class="sub">저장된 기초자료에서 금액, 심플웍스 No, 상품 사이즈, 무게, 납품불가 표시를 수정합니다.</div>
       {message}
+      <section class="panel">
+        <form method="post" action="/master/upload" enctype="multipart/form-data">
+          <input type="hidden" name="next" value="master">
+          <div class="toolbar">
+            <label>기초자료 엑셀 다시 올리기
+              <input type="file" name="master" accept=".xlsx" required>
+            </label>
+            <div class="toolbar-actions">
+              <button class="btn secondary" type="submit">현재 기초자료 교체</button>
+            </div>
+          </div>
+        </form>
+      </section>
       <form method="post" action="/master/save">
         <section class="panel">
           <div class="add-grid">
@@ -1601,6 +1614,31 @@ def find_master_columns(ws) -> dict[str, int]:
     }
 
 
+def normalize_master_file(master_path: Path) -> None:
+    wb = load_workbook(master_path)
+    ws = wb.active
+    find_master_columns(ws)
+    wb.save(master_path)
+
+
+def replace_saved_master_file(name: str, master_bytes: bytes) -> Path:
+    MASTER_DIR.mkdir(parents=True, exist_ok=True)
+    current_master = get_local_master_path()
+    if current_master is not None:
+        backup_dir = MASTER_DIR / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"{current_master.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        shutil.copy2(current_master, backup_path)
+    for path in MASTER_DIR.glob("*.xlsx"):
+        if path.is_file() and not path.name.startswith("~$"):
+            path.unlink(missing_ok=True)
+    target_path = MASTER_DIR / name
+    target_path.write_bytes(master_bytes)
+    normalize_master_file(target_path)
+    backup_master_file_to_supabase(target_path)
+    return target_path
+
+
 def render_master_rows(master_path: Path) -> str:
     wb = load_workbook(master_path, data_only=True)
     ws = wb.active
@@ -1733,6 +1771,7 @@ def save_master_form(form: cgi.FieldStorage) -> int:
             ws.cell(row, cols["unavailable"]).value = new_unavailable
             changed += 1
     wb.save(master_path)
+    backup_master_file_to_supabase(master_path)
     return changed
 
 
@@ -3147,6 +3186,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             headers=self.headers,
             environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
         )
+        next_page = form["next"].value.strip() if "next" in form else ""
         try:
             item = form["master"] if "master" in form else None
             if item is None or not getattr(item, "filename", ""):
@@ -3165,13 +3205,18 @@ class BonnieHandler(BaseHTTPRequestHandler):
             finally:
                 check_path.unlink(missing_ok=True)
 
-            MASTER_DIR.mkdir(parents=True, exist_ok=True)
-            target_path = MASTER_DIR / name
-            target_path.write_bytes(master_bytes)
-            backup_master_file_to_supabase(target_path)
-            self.send_html(self.page(build_message("ok", f"기초자료를 저장했습니다: {name}")))
+            replace_saved_master_file(name, master_bytes)
+            message = build_message("ok", f"기초자료를 교체 저장했습니다: {name}")
+            if next_page == "master":
+                self.send_html(self.master_page(message))
+            else:
+                self.send_html(self.page(message))
         except Exception as exc:
-            self.send_html(self.page(build_message("err", f"기초자료 저장 중 오류가 났습니다: {exc}")), status=500)
+            message = build_message("err", f"기초자료 저장 중 오류가 났습니다: {exc}")
+            if next_page == "master":
+                self.send_html(self.master_page(message), status=500)
+            else:
+                self.send_html(self.page(message), status=500)
 
     def handle_pallet_create_request(self) -> None:
         try:
@@ -3267,10 +3312,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             master_path = work_dir / master_name
             master_bytes = master_item.file.read()
             master_path.write_bytes(master_bytes)
-            MASTER_DIR.mkdir(parents=True, exist_ok=True)
-            saved_master_path = MASTER_DIR / master_name
-            saved_master_path.write_bytes(master_bytes)
-            backup_master_file_to_supabase(saved_master_path)
+            replace_saved_master_file(master_name, master_bytes)
         else:
             saved_master = get_saved_master_path()
             if saved_master is None:
