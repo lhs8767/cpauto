@@ -343,12 +343,6 @@ HTML_PAGE = """<!DOCTYPE html>
         <section class="panel {year_section_class}">
           <div class="panel-head">파일 업로드</div>
           <div class="panel-body">
-            <form method="post" action="/master/upload" enctype="multipart/form-data">
-              <label>기초자료 엑셀 <span style="color:#667085;font-weight:500;">(처음 또는 변경 시에만 선택)</span></label>
-              <input type="file" name="master" accept=".xlsx" required />
-              <button class="btn" type="submit">기초자료 저장</button>
-            </form>
-            <div style="height:18px"></div>
             <form method="post" action="/convert" enctype="multipart/form-data">
               <label>쿠팡 PO 엑셀 파일</label>
               <input type="file" name="po_files" accept=".xlsx" multiple required />
@@ -356,6 +350,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </form>
             <div class="note">
               {master_status}
+              <br>기초자료 등록/교체/삭제는 왼쪽의 쿠팡 기초자료 관리에서 진행합니다.
               <br>PO는 한 개도 되고 여러 개도 됩니다. 결과는 ZIP 파일로 내려받습니다.
               ZIP은 여러 파일을 하나로 묶은 압축 파일입니다.
             </div>
