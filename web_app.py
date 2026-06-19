@@ -2661,14 +2661,33 @@ def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[d
     return dict(expected), unmapped
 
 
+def get_sales_ledger_date_summary() -> str:
+    if not SALES_LEDGER_PATH.exists():
+        return "서버에 월별납품 내부자료가 없습니다."
+    wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
+    ws = wb.active
+    totals: dict[str, int] = defaultdict(int)
+    for row in range(2, ws.max_row + 1):
+        day = str(ws.cell(row, 1).value or "").strip()
+        if not day:
+            continue
+        totals[day] += parse_int(ws.cell(row, 6).value)
+    if not totals:
+        return "서버의 월별납품 내부자료가 비어 있습니다."
+    parts = [f"{day}: {qty:,}개" for day, qty in sorted(totals.items())]
+    return "서버에 있는 쿠팡 납품자료 날짜: " + ", ".join(parts)
+
+
 def render_check_result(simpleworks_qty: dict[str, int], date_from: str, date_to: str) -> str:
     _sku_to_simple, simple_to_info = get_master_simpleworks_maps()
     coupang_qty, unmapped = get_coupang_quantities_by_simple_no(date_from, date_to)
     if not coupang_qty and not unmapped:
+        date_summary = html.escape(get_sales_ledger_date_summary())
         return (
             '<section class="panel"><div class="panel-head">검수 결과</div><div class="panel-body">'
             '<div class="msg err">선택한 날짜 범위에 쿠팡 납품자료가 없습니다. '
-            '월별납품관리에서 해당 날짜 PO를 먼저 반영했는지, 검수 날짜가 맞는지 확인해주세요.</div>'
+            '월별납품관리에서 해당 날짜 PO를 먼저 반영했는지, 검수 날짜가 맞는지 확인해주세요.'
+            f'<br>{date_summary}</div>'
             '</div></section>'
         )
     all_simple_nos = sorted(set(coupang_qty) | set(simpleworks_qty), key=lambda value: int(value) if value.isdigit() else value)
