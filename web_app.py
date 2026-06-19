@@ -2639,20 +2639,14 @@ def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[d
     expected: dict[str, int] = defaultdict(int)
     unmapped: list[tuple[str, str, int]] = []
     if not SALES_LEDGER_PATH.exists():
-        return {}, []
-    wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
-    ws = wb.active
-    for row in range(2, ws.max_row + 1):
-        day = str(ws.cell(row, 1).value or "").strip()
+        rows = iter_sales_rows_from_display_workbook()
+    else:
+        rows = iter_sales_rows_from_ledger()
+    for day, sku, name, qty in rows:
         if date_from and day < date_from:
             continue
         if date_to and day > date_to:
             continue
-        sku = str(ws.cell(row, 4).value or "").strip()
-        name = str(ws.cell(row, 5).value or "").strip()
-        original_qty = parse_int(ws.cell(row, 6).value)
-        adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
-        qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
         simple_no = sku_to_simple.get(sku, "")
         if simple_no:
             expected[simple_no] += qty
@@ -2661,19 +2655,55 @@ def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[d
     return dict(expected), unmapped
 
 
-def get_sales_ledger_date_summary() -> str:
-    if not SALES_LEDGER_PATH.exists():
-        return "서버에 월별납품 내부자료가 없습니다."
+def iter_sales_rows_from_ledger() -> list[tuple[str, str, str, int]]:
     wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
     ws = wb.active
-    totals: dict[str, int] = defaultdict(int)
+    rows: list[tuple[str, str, str, int]] = []
     for row in range(2, ws.max_row + 1):
         day = str(ws.cell(row, 1).value or "").strip()
-        if not day:
+        sku = str(ws.cell(row, 4).value or "").strip()
+        name = str(ws.cell(row, 5).value or "").strip()
+        original_qty = parse_int(ws.cell(row, 6).value)
+        adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
+        qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
+        rows.append((day, sku, name, qty))
+    return rows
+
+
+def iter_sales_rows_from_display_workbook() -> list[tuple[str, str, str, int]]:
+    if not MONTHLY_SALES_PATH.exists():
+        return []
+    wb = load_workbook(MONTHLY_SALES_PATH, data_only=True)
+    ws = wb.active
+    rows: list[tuple[str, str, str, int]] = []
+    current_day = ""
+    for row in range(1, ws.max_row + 1):
+        first = str(ws.cell(row, 1).value or "").strip()
+        day_match = re.match(r"(\d{4}-\d{2}-\d{2})\s+합계", first)
+        if day_match:
+            current_day = day_match.group(1)
             continue
-        totals[day] += parse_int(ws.cell(row, 6).value)
+        if not current_day or first in ["SKU ID", "합계"] or not first:
+            continue
+        sku = first
+        name = str(ws.cell(row, 2).value or "").strip()
+        qty = parse_int(ws.cell(row, 3).value)
+        if sku and qty:
+            rows.append((current_day, sku, name, qty))
+    return rows
+
+
+def get_sales_ledger_date_summary() -> str:
+    totals: dict[str, int] = defaultdict(int)
+    if SALES_LEDGER_PATH.exists():
+        rows = iter_sales_rows_from_ledger()
+    else:
+        rows = iter_sales_rows_from_display_workbook()
+    for day, _sku, _name, qty in rows:
+        if day:
+            totals[day] += qty
     if not totals:
-        return "서버의 월별납품 내부자료가 비어 있습니다."
+        return "서버의 월별납품 자료가 비어 있습니다."
     parts = [f"{day}: {qty:,}개" for day, qty in sorted(totals.items())]
     return "서버에 있는 쿠팡 납품자료 날짜: " + ", ".join(parts)
 
