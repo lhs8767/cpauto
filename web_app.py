@@ -2404,7 +2404,7 @@ def extract_simpleworks_quantities_from_text(text: str) -> dict[str, int]:
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
-        simple_match = re.search(r"([0-9$SIl|]{3,7})\s*[:：]", line)
+        simple_match = re.search(r"([0-9$SIl|Tt]{3,7})\s*[:：]", line)
         if simple_match:
             pending_simple_no = (
                 simple_match.group(1)
@@ -2413,6 +2413,8 @@ def extract_simpleworks_quantities_from_text(text: str) -> dict[str, int]:
                 .replace("I", "1")
                 .replace("l", "1")
                 .replace("|", "1")
+                .replace("T", "7")
+                .replace("t", "7")
             )
             pending_simple_no = re.sub(r"\D", "", pending_simple_no)
         elif not pending_simple_no:
@@ -2429,6 +2431,28 @@ def extract_simpleworks_quantities_from_text(text: str) -> dict[str, int]:
             quantities[pending_simple_no] += parse_int(qty_matches[-1])
             pending_simple_no = ""
     return dict(quantities)
+
+
+def merge_quantity_maps(*quantity_maps: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for quantity_map in quantity_maps:
+        for simple_no, qty in quantity_map.items():
+            if qty <= 0:
+                continue
+            merged[simple_no] = max(merged.get(simple_no, 0), qty)
+    return merged
+
+
+def filter_known_simpleworks_quantities(quantities: dict[str, int]) -> dict[str, int]:
+    try:
+        _sku_to_simple, simple_to_info = get_master_simpleworks_maps()
+    except Exception:
+        return quantities
+    known_simple_nos = set(simple_to_info)
+    if not known_simple_nos:
+        return quantities
+    filtered = {simple_no: qty for simple_no, qty in quantities.items() if simple_no in known_simple_nos}
+    return filtered or quantities
 
 
 def get_tesseract_candidates() -> list[str]:
@@ -2476,6 +2500,8 @@ def clean_ocr_simple_no(text: str) -> str:
         .replace("I", "1")
         .replace("l", "1")
         .replace("|", "1")
+        .replace("T", "7")
+        .replace("t", "7")
     )
     digits = re.sub(r"\D", "", cleaned)
     if len(digits) == 5 and digits.endswith("2"):
@@ -2542,13 +2568,21 @@ def parse_simpleworks_table_image(path: Path, tesseract_path: str) -> dict[str, 
         if bottom <= top:
             continue
 
-        no_crop = image.crop((0, top, min(55, max(45, divider_x // 9)), bottom))
+        no_crop = image.crop((8, top, min(120, max(80, divider_x // 4)), bottom))
         no_crop = no_crop.resize((no_crop.width * 6, no_crop.height * 6))
         no_crop = ImageEnhance.Contrast(no_crop).enhance(2.2)
         no_path = temp_dir / f"{path.stem}_no_{index}.png"
         no_crop.save(no_path)
-        no_text = run_tesseract_text(tesseract_path, no_path, "7", "0123456789$SIl|")
+        no_text = run_tesseract_text(tesseract_path, no_path, "7", "0123456789$SIl|Tt")
         simple_no = clean_ocr_simple_no(no_text)
+        if not simple_no:
+            row_crop = image.crop((0, top, divider_x, bottom))
+            row_crop = row_crop.resize((row_crop.width * 3, row_crop.height * 3))
+            row_crop = ImageEnhance.Contrast(row_crop).enhance(2.0)
+            row_path = temp_dir / f"{path.stem}_row_{index}.png"
+            row_crop.save(row_path)
+            row_text = run_tesseract_text(tesseract_path, row_path, "6")
+            simple_no = extract_simple_no([row_text])
 
         qty_crop = image.crop((divider_x + 4, top, min(width, divider_x + 56), bottom))
         qty_crop = qty_crop.resize((qty_crop.width * 6, qty_crop.height * 6))
@@ -2573,9 +2607,15 @@ def parse_simpleworks_image(path: Path) -> dict[str, int]:
             f"지금은 심플웍스 엑셀 업로드를 사용해주세요. 확인한 경로: {checked} / PATH: {os.environ.get('PATH', '')}"
         )
     table_quantities = parse_simpleworks_table_image(path, tesseract_path)
-    if table_quantities:
-        return table_quantities
-    return extract_simpleworks_quantities_from_text(run_tesseract_text(tesseract_path, path, "6"))
+    full_text_quantities: dict[str, int] = {}
+    try:
+        full_text = run_tesseract_text(tesseract_path, path, "6")
+        full_text_quantities = extract_simpleworks_quantities_from_text(full_text)
+    except Exception:
+        if not table_quantities:
+            raise
+    merged = merge_quantity_maps(table_quantities, full_text_quantities)
+    return filter_known_simpleworks_quantities(merged)
 
 
 def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[dict[str, int], list[tuple[str, str, int]]]:
