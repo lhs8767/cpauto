@@ -508,7 +508,7 @@ CHECK_PAGE = """<!DOCTYPE html>
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; }
     .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; }
     .panel-body { padding:18px; }
-    .form-grid { display:grid; grid-template-columns:180px 180px minmax(220px,1fr) minmax(220px,1fr) minmax(220px,1fr); gap:12px; align-items:end; }
+    .form-grid { display:grid; grid-template-columns:180px 180px minmax(260px,1fr) minmax(260px,1fr); gap:12px; align-items:end; }
     label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:#344054; font-weight:800; }
     input[type=date], input[type=file] { width:100%; border:1px solid #b9c6d8; border-radius:8px; padding:10px 11px; font:inherit; background:white; }
     .btn { border:0; border-radius:8px; padding:12px 16px; background:var(--brand); color:white; font-weight:800; cursor:pointer; font-size:14px; }
@@ -568,13 +568,10 @@ CHECK_PAGE = """<!DOCTYPE html>
                 <label>심플웍스 캡쳐 이미지
                   <input type="file" name="simpleworks_image" accept=".png,.jpg,.jpeg,.bmp,.webp" multiple>
                 </label>
-                <label>쿠팡 PO 직접 비교
-                  <input type="file" name="coupang_po_files" accept=".xlsx" multiple>
-                </label>
               </div>
               <div style="margin-top:14px;"><button class="btn" type="submit">수량 검수하기</button></div>
             </form>
-            <div class="note">심플웍스 엑셀 또는 캡쳐 이미지를 여러 개 올릴 수 있습니다. 쿠팡 PO 직접 비교에 PO를 올리면 월별납품 저장자료가 없어도 해당 PO 기준으로 바로 검수합니다.</div>
+            <div class="note">심플웍스 엑셀 또는 캡쳐 이미지를 여러 개 올릴 수 있습니다. 각 파일의 상품명 앞 노란 숫자를 `심플웍스 No`로 읽고, 같은 번호는 수량을 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
           </div>
         </section>
         {result}
@@ -2638,6 +2635,7 @@ def parse_simpleworks_image(path: Path) -> dict[str, int]:
 
 
 def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[dict[str, int], list[tuple[str, str, int]]]:
+    restore_sales_files_from_supabase()
     sku_to_simple, _simple_to_info = get_master_simpleworks_maps()
     expected: dict[str, int] = defaultdict(int)
     unmapped: list[tuple[str, str, int]] = []
@@ -2654,25 +2652,6 @@ def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[d
         if simple_no:
             expected[simple_no] += qty
         elif qty:
-            unmapped.append((sku, name, qty))
-    return dict(expected), unmapped
-
-
-def get_coupang_quantities_from_po_lines(lines) -> tuple[dict[str, int], list[tuple[str, str, int]]]:
-    sku_to_simple, _simple_to_info = get_master_simpleworks_maps()
-    prefer_inbound = has_inbound_sales_data(lines)
-    expected: dict[str, int] = defaultdict(int)
-    unmapped: list[tuple[str, str, int]] = []
-    for line in lines:
-        sku = str(getattr(line, "sku_id", "") or "").strip()
-        name = str(getattr(line, "product_name", "") or "").strip()
-        qty = get_sales_qty(line, prefer_inbound)
-        if qty <= 0:
-            continue
-        simple_no = sku_to_simple.get(sku, "")
-        if simple_no:
-            expected[simple_no] += qty
-        else:
             unmapped.append((sku, name, qty))
     return dict(expected), unmapped
 
@@ -2716,6 +2695,7 @@ def iter_sales_rows_from_display_workbook() -> list[tuple[str, str, str, int]]:
 
 
 def get_sales_ledger_date_summary() -> str:
+    restore_sales_files_from_supabase()
     totals: dict[str, int] = defaultdict(int)
     if SALES_LEDGER_PATH.exists():
         rows = iter_sales_rows_from_ledger()
@@ -2734,13 +2714,9 @@ def render_check_result(
     simpleworks_qty: dict[str, int],
     date_from: str,
     date_to: str,
-    coupang_override: tuple[dict[str, int], list[tuple[str, str, int]]] | None = None,
 ) -> str:
     _sku_to_simple, simple_to_info = get_master_simpleworks_maps()
-    if coupang_override is None:
-        coupang_qty, unmapped = get_coupang_quantities_by_simple_no(date_from, date_to)
-    else:
-        coupang_qty, unmapped = coupang_override
+    coupang_qty, unmapped = get_coupang_quantities_by_simple_no(date_from, date_to)
     if not coupang_qty and not unmapped:
         date_summary = html.escape(get_sales_ledger_date_summary())
         return (
@@ -3224,26 +3200,20 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 raise ValueError("검수 시작일이 종료일보다 뒤입니다. 날짜를 다시 선택해주세요.")
             excel_items = form["simpleworks_file"] if "simpleworks_file" in form else []
             image_items = form["simpleworks_image"] if "simpleworks_image" in form else []
-            coupang_items = form["coupang_po_files"] if "coupang_po_files" in form else []
             if not isinstance(excel_items, list):
                 excel_items = [excel_items]
             if not isinstance(image_items, list):
                 image_items = [image_items]
-            if not isinstance(coupang_items, list):
-                coupang_items = [coupang_items]
             excel_items = [item for item in excel_items if getattr(item, "filename", "")]
             image_items = [item for item in image_items if getattr(item, "filename", "")]
-            coupang_items = [item for item in coupang_items if getattr(item, "filename", "")]
             if not excel_items and not image_items:
                 raise ValueError("심플웍스 엑셀 또는 캡쳐 이미지 파일을 올려주세요.")
             run_id = uuid.uuid4().hex[:12]
             work_dir = RUNS_DIR / f"check_{run_id}"
             work_dir.mkdir(parents=True, exist_ok=True)
             simpleworks_qty: dict[str, int] = defaultdict(int)
-            coupang_lines = []
             excel_count = 0
             image_count = 0
-            coupang_count = 0
             for item in excel_items:
                 name = safe_name(item.filename)
                 if not name.lower().endswith(".xlsx"):
@@ -3264,20 +3234,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 for simple_no, qty in parsed_qty.items():
                     simpleworks_qty[simple_no] += qty
                 image_count += 1
-            for item in coupang_items:
-                name = safe_name(item.filename)
-                if not name.lower().endswith(".xlsx"):
-                    raise ValueError("쿠팡 PO 직접 비교 파일은 .xlsx 파일로 올려주세요.")
-                file_path = work_dir / name
-                file_path.write_bytes(item.file.read())
-                coupang_lines.extend(read_po_lines(file_path))
-                coupang_count += 1
             simpleworks_qty = dict(simpleworks_qty)
             if not simpleworks_qty:
                 raise ValueError("올린 파일에서 심플웍스 No와 수량을 찾지 못했습니다.")
-            coupang_override = get_coupang_quantities_from_po_lines(coupang_lines) if coupang_lines else None
-            result = render_check_result(simpleworks_qty, date_from, date_to, coupang_override)
-            msg = build_message("ok", f"검수 완료: 심플웍스 엑셀 {excel_count:,}개, 캡쳐 이미지 {image_count:,}개, 쿠팡 PO {coupang_count:,}개를 확인했습니다.")
+            result = render_check_result(simpleworks_qty, date_from, date_to)
+            msg = build_message("ok", f"검수 완료: 심플웍스 엑셀 {excel_count:,}개, 캡쳐 이미지 {image_count:,}개에서 심플웍스 No {len(simpleworks_qty):,}개를 합산했습니다.")
             self.send_html(self.check_page(msg, result, date_from, date_to))
         except Exception as exc:
             self.send_html(self.check_page(build_message("err", f"수량검수 중 오류가 났습니다: {exc}"), "", date_from, date_to), status=500)
