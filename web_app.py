@@ -2439,7 +2439,8 @@ def merge_quantity_maps(*quantity_maps: dict[str, int]) -> dict[str, int]:
         for simple_no, qty in quantity_map.items():
             if qty <= 0:
                 continue
-            merged[simple_no] = max(merged.get(simple_no, 0), qty)
+            if simple_no not in merged:
+                merged[simple_no] = qty
     return merged
 
 
@@ -2620,8 +2621,13 @@ def parse_simpleworks_image(path: Path) -> dict[str, int]:
     full_text_quantities: dict[str, int] = {}
     try:
         full_text = run_tesseract_text(tesseract_path, path, "6")
+        lower_full_text = full_text.lower()
+        if any(keyword in full_text for keyword in ["검수 결과", "심플웍스만 있음", "쿠팡만 있음", "수량차이"]) or "sku id" in lower_full_text:
+            raise ValueError("검수 결과 화면 캡쳐가 아니라 심플웍스 상품/수량 화면 캡쳐를 올려주세요.")
         full_text_quantities = extract_simpleworks_quantities_from_text(full_text)
-    except Exception:
+    except Exception as exc:
+        if "검수 결과 화면 캡쳐" in str(exc):
+            raise
         if not table_quantities:
             raise
     merged = merge_quantity_maps(table_quantities, full_text_quantities)
@@ -2658,6 +2664,13 @@ def get_coupang_quantities_by_simple_no(date_from: str, date_to: str) -> tuple[d
 def render_check_result(simpleworks_qty: dict[str, int], date_from: str, date_to: str) -> str:
     _sku_to_simple, simple_to_info = get_master_simpleworks_maps()
     coupang_qty, unmapped = get_coupang_quantities_by_simple_no(date_from, date_to)
+    if not coupang_qty and not unmapped:
+        return (
+            '<section class="panel"><div class="panel-head">검수 결과</div><div class="panel-body">'
+            '<div class="msg err">선택한 날짜 범위에 쿠팡 납품자료가 없습니다. '
+            '월별납품관리에서 해당 날짜 PO를 먼저 반영했는지, 검수 날짜가 맞는지 확인해주세요.</div>'
+            '</div></section>'
+        )
     all_simple_nos = sorted(set(coupang_qty) | set(simpleworks_qty), key=lambda value: int(value) if value.isdigit() else value)
     rows = []
     ok_count = diff_count = coupang_only = simple_only = 0
@@ -3128,6 +3141,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
         date_from = form["date_from"].value.strip() if "date_from" in form else ""
         date_to = form["date_to"].value.strip() if "date_to" in form else ""
         try:
+            if date_from and date_to and date_from > date_to:
+                raise ValueError("검수 시작일이 종료일보다 뒤입니다. 날짜를 다시 선택해주세요.")
             excel_items = form["simpleworks_file"] if "simpleworks_file" in form else []
             image_items = form["simpleworks_image"] if "simpleworks_image" in form else []
             if not isinstance(excel_items, list):
