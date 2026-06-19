@@ -2455,6 +2455,16 @@ def filter_known_simpleworks_quantities(quantities: dict[str, int]) -> dict[str,
     return filtered or quantities
 
 
+def normalize_ocr_qty_against_expected(actual: int, expected: int) -> int:
+    if expected < 10 or actual <= expected:
+        return actual
+    actual_text = str(actual)
+    expected_text = str(expected)
+    if actual >= expected * 10 and actual_text.startswith(expected_text):
+        return expected
+    return actual
+
+
 def get_tesseract_candidates() -> list[str]:
     return [
         os.environ.get("TESSERACT_CMD", ""),
@@ -2654,6 +2664,7 @@ def render_check_result(simpleworks_qty: dict[str, int], date_from: str, date_to
     for simple_no in all_simple_nos:
         expected = coupang_qty.get(simple_no, 0)
         actual = simpleworks_qty.get(simple_no, 0)
+        actual = normalize_ocr_qty_against_expected(actual, expected)
         diff = actual - expected
         info = simple_to_info.get(simple_no, {"sku": "", "name": ""})
         if expected == actual:
