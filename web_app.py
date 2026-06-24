@@ -1813,6 +1813,22 @@ def update_master_amounts_from_lines(lines) -> int:
     return changed
 
 
+def get_master_amounts_by_sku() -> dict[str, int]:
+    master_path = get_saved_master_path()
+    if master_path is None:
+        return {}
+    wb = load_workbook(master_path, data_only=True)
+    ws = wb.active
+    cols = find_master_columns(ws)
+    amounts: dict[str, int] = {}
+    for row in range(2, ws.max_row + 1):
+        sku = str(ws.cell(row, cols["sku"]).value or "").strip()
+        amount = parse_int(ws.cell(row, cols["amount"]).value)
+        if sku and amount > 0:
+            amounts[sku] = amount
+    return amounts
+
+
 def parse_month(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1923,6 +1939,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     wb, ws = ensure_monthly_sales_book()
     po_numbers = {line.po_no for line in lines}
     prefer_inbound = has_inbound_sales_data(lines)
+    master_amounts = get_master_amounts_by_sku()
 
     rows_to_keep = []
     for row in range(2, ws.max_row + 1):
@@ -1950,16 +1967,18 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         "po_numbers": set(),
     })
     for line in lines:
+        sku = str(line.sku_id or "").strip()
         sales_qty = get_sales_qty(line, prefer_inbound)
-        sales_amount = get_sales_amount(line, prefer_inbound)
+        master_unit_price = master_amounts.get(sku, 0)
+        sales_amount = master_unit_price * sales_qty if master_unit_price > 0 else get_sales_amount(line, prefer_inbound)
         if sales_qty <= 0 and sales_amount <= 0:
             continue
         day = parse_date(line.inbound_date)
-        key = (day, line.sku_id)
+        key = (day, sku)
         item = grouped[key]
         item["month"] = parse_month(line.inbound_date)
         item["inbound_date"] = line.inbound_date
-        item["sku"] = line.sku_id
+        item["sku"] = sku
         item["name"] = item["name"] or line.product_name
         item["qty"] += sales_qty
         item["amount"] += sales_amount
@@ -1989,13 +2008,14 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     wb.save(SALES_LEDGER_PATH)
     write_sales_display_workbook()
     backup_sales_files_to_supabase()
-    return saved_count, sum(get_sales_amount(line, prefer_inbound) for line in lines)
+    return saved_count, sum(item["amount"] for item in grouped.values())
 
 
 def load_monthly_sales_summary() -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
+    master_amounts = get_master_amounts_by_sku()
     wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
     ws = wb.active
     summary = defaultdict(lambda: {"qty": 0, "amount": 0, "pos": set()})
@@ -2010,7 +2030,8 @@ def load_monthly_sales_summary() -> tuple[list[tuple[str, int, int, int]], list[
         adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
-        unit_price = round(original_amount / original_qty) if original_qty else 0
+        master_unit_price = master_amounts.get(str(sku).strip(), 0)
+        unit_price = master_unit_price if master_unit_price > 0 else (round(original_amount / original_qty) if original_qty else 0)
         amount = unit_price * adjusted_qty
         clean_po_numbers = []
         if not day:
