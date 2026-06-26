@@ -2011,7 +2011,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     return saved_count, sum(item["amount"] for item in grouped.values())
 
 
-def load_monthly_sales_summary() -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = 300) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -2060,7 +2060,9 @@ def load_monthly_sales_summary() -> tuple[list[tuple[str, int, int, int]], list[
         (month, values["qty"], values["amount"], len(values["pos"]))
         for month, values in sorted(summary.items())
     ]
-    return summary_rows, rows[-300:]
+    if limit_rows is None:
+        return summary_rows, rows
+    return summary_rows, rows[-limit_rows:]
 
 
 def sales_extra_amounts(amount: int) -> tuple[int, int]:
@@ -2160,7 +2162,7 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
 
 
 def write_sales_display_workbook() -> Path:
-    summary_rows, detail_rows = load_monthly_sales_summary()
+    summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
@@ -3075,7 +3077,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if parsed.path == "/sales/download":
             if self.require_permission("sales") is None:
                 return
-            if not MONTHLY_SALES_PATH.exists() and SALES_LEDGER_PATH.exists():
+            if SALES_LEDGER_PATH.exists():
                 write_sales_display_workbook()
             if not MONTHLY_SALES_PATH.exists():
                 self.send_html(render_sales_page(build_message("err", "아직 월매출 엑셀 파일이 없습니다.")), status=404)
