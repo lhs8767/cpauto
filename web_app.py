@@ -720,12 +720,13 @@ SALES_PAGE = """<!DOCTYPE html>
         var month = row.dataset.month;
         var originalQty = Number(row.dataset.originalQty || "0");
         var qtyInput = row.querySelector(".qty-input");
-        var qty = Number(qtyInput.value || "0");
+        var qty = qtyInput ? Number(qtyInput.value || "0") : Number((row.children[2]?.textContent || "0").replaceAll(",", ""));
         var unitPrice = Number(row.dataset.unitPrice || "0");
         var amount = qty * unitPrice;
         row.querySelector(".row-amount").textContent = money(amount);
-        row.classList.toggle("changed", qty !== originalQty || !!row.querySelector(".memo-input").value.trim());
-        qtyInput.classList.toggle("changed", qty !== originalQty);
+        var memoInput = row.querySelector(".memo-input");
+        row.classList.toggle("changed", qty !== originalQty || !!(memoInput && memoInput.value.trim()));
+        if (qtyInput) qtyInput.classList.toggle("changed", qty !== originalQty);
         if (!dayTotals[day]) dayTotals[day] = { qty: 0, amount: 0 };
         dayTotals[day].qty += qty;
         dayTotals[day].amount += amount;
@@ -1915,7 +1916,7 @@ def describe_sales_date_breakdown(lines) -> str:
 def ensure_monthly_sales_book():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     restore_sales_files_from_supabase()
-    headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모"]
+    headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모", "PO번호"]
     if SALES_LEDGER_PATH.exists():
         wb = load_workbook(SALES_LEDGER_PATH)
         ws = wb.active
@@ -1950,7 +1951,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             if part.strip()
         }
         if not (existing_po_numbers & po_numbers):
-            rows_to_keep.append([ws.cell(row, col).value for col in range(1, 12)])
+            rows_to_keep.append([ws.cell(row, col).value for col in range(1, 13)])
 
     ws.delete_rows(2, max(ws.max_row - 1, 0))
     for row_values in rows_to_keep:
@@ -1959,6 +1960,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     grouped = defaultdict(lambda: {
         "month": "",
         "inbound_date": "",
+        "po_no": "",
         "sku": "",
         "name": "",
         "qty": 0,
@@ -1974,10 +1976,12 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         if sales_qty <= 0 and sales_amount <= 0:
             continue
         day = parse_date(line.inbound_date)
-        key = (day, sku)
+        po_no = str(line.po_no or "").strip()
+        key = (day, po_no, sku)
         item = grouped[key]
         item["month"] = parse_month(line.inbound_date)
         item["inbound_date"] = line.inbound_date
+        item["po_no"] = po_no
         item["sku"] = sku
         item["name"] = item["name"] or line.product_name
         item["qty"] += sales_qty
@@ -1986,9 +1990,9 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         item["po_numbers"].add(line.po_no)
 
     saved_count = 0
-    for (day, _sku), item in sorted(grouped.items()):
+    for (_day, _po_no, _sku), item in sorted(grouped.items()):
         ws.append([
-            day,
+            _day,
             item["month"],
             item["inbound_date"],
             item["sku"],
@@ -1996,9 +2000,10 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             item["qty"],
             item["amount"],
             item["barcode"],
-            ", ".join(sorted(item["po_numbers"])),
+            item["po_no"],
             "",
             "",
+            item["po_no"],
         ])
         saved_count += 1
 
@@ -2011,7 +2016,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     return saved_count, sum(item["amount"] for item in grouped.values())
 
 
-def load_monthly_sales_summary(limit_rows: int | None = 300) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -2027,6 +2032,9 @@ def load_monthly_sales_summary(limit_rows: int | None = 300) -> tuple[list[tuple
         original_qty = parse_int(ws.cell(row, 6).value)
         original_amount = parse_int(ws.cell(row, 7).value)
         remarks = str(ws.cell(row, 9).value or "")
+        row_po_no = str(ws.cell(row, 12).value or "").strip() or ", ".join(
+            part.strip() for part in remarks.replace("PO:", "").split(",") if part.strip()
+        )
         adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
@@ -2038,11 +2046,11 @@ def load_monthly_sales_summary(limit_rows: int | None = 300) -> tuple[list[tuple
             continue
         summary[day]["qty"] += adjusted_qty
         summary[day]["amount"] += amount
-        for po_no in remarks.replace("PO:", "").split(","):
-            po_no = po_no.strip()
-            if po_no:
-                summary[day]["pos"].add(po_no)
-                clean_po_numbers.append(po_no)
+        for part in (row_po_no or remarks).replace("PO:", "").split(","):
+            part = part.strip()
+            if part:
+                summary[day]["pos"].add(part)
+                clean_po_numbers.append(part)
         rows.append([
             row,
             day,
@@ -2052,10 +2060,53 @@ def load_monthly_sales_summary(limit_rows: int | None = 300) -> tuple[list[tuple
             adjusted_qty,
             unit_price,
             amount,
-            ", ".join(clean_po_numbers),
+            row_po_no or ", ".join(clean_po_numbers),
             adjusted_memo,
             adjusted_qty != original_qty or bool(adjusted_memo),
         ])
+    if aggregate_by_sku:
+        grouped_rows = {}
+        for row_no, day, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in rows:
+            key = (day, sku)
+            item = grouped_rows.setdefault(key, {
+                "row_no": row_no,
+                "day": day,
+                "sku": sku,
+                "name": name,
+                "original_qty": 0,
+                "qty": 0,
+                "unit_price": unit_price,
+                "amount": 0,
+                "remarks": set(),
+                "memo": [],
+                "changed": False,
+            })
+            item["original_qty"] += original_qty
+            item["qty"] += qty
+            item["amount"] += amount
+            item["changed"] = bool(item["changed"] or changed)
+            for po_no in str(remarks).split(","):
+                po_no = po_no.strip()
+                if po_no:
+                    item["remarks"].add(po_no)
+            if memo:
+                item["memo"].append(str(memo))
+        rows = [
+            [
+                item["row_no"],
+                item["day"],
+                item["sku"],
+                item["name"],
+                item["original_qty"],
+                item["qty"],
+                item["unit_price"],
+                item["amount"],
+                ", ".join(sorted(item["remarks"])),
+                " / ".join(item["memo"]),
+                item["changed"],
+            ]
+            for item in grouped_rows.values()
+        ]
     summary_rows = [
         (month, values["qty"], values["amount"], len(values["pos"]))
         for month, values in sorted(summary.items())
@@ -2162,7 +2213,7 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
 
 
 def write_sales_display_workbook() -> Path:
-    summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None)
+    summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
@@ -2241,7 +2292,7 @@ def write_sales_display_workbook() -> Path:
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
-    summary_rows, detail_rows = load_monthly_sales_summary()
+    summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=not folder_mode)
     current_month = datetime.now().strftime("%Y-%m")
     visible_detail_rows = detail_rows if folder_mode else [
         row for row in detail_rows if str(row[1]).startswith(current_month)
@@ -2298,17 +2349,26 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 )
                 for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
                     changed_class = " changed" if changed else ""
-                    parts.append(
-                        f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
-                        f'<input type="hidden" name="row" value="{row_no}"></td>'
-                        f"<td>{html.escape(str(name))}</td>"
-                        f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
-                        f'name="qty_{row_no}" value="{qty}"></td>'
-                        f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td>{html.escape(str(remarks))}</td>'
-                        f'<td><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
-                        f'placeholder="수정 사유"></td>'
-                        f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
-                    )
+                    if folder_mode:
+                        parts.append(
+                            f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
+                            f'<input type="hidden" name="row" value="{row_no}"></td>'
+                            f"<td>{html.escape(str(name))}</td>"
+                            f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
+                            f'name="qty_{row_no}" value="{qty}"></td>'
+                            f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td>{html.escape(str(remarks))}</td>'
+                            f'<td><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
+                            f'placeholder="수정 사유"></td>'
+                            f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
+                        )
+                    else:
+                        parts.append(
+                            f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
+                            f"<td>{html.escape(str(sku))}</td><td>{html.escape(str(name))}</td>"
+                            f'<td class="{changed_class.strip()}">{qty:,}</td>'
+                            f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td>{html.escape(str(remarks))}</td>'
+                            f"<td>{html.escape(str(memo))}</td><td>조회용</td></tr>"
+                        )
         detail_html = "\n".join(parts)
     else:
         detail_html = '<tr><td colspan="8">해당 월 납품 상품 내역이 없습니다.</td></tr>'
