@@ -1102,18 +1102,7 @@ SALES_PAGE = """<!DOCTYPE html>
             </label>
             <button class="lookup-reset" type="button" onclick="resetLookup('summary')">조회 초기화</button>
           </div>
-          <table class="summary-table resizable-table">
-            <colgroup>
-              <col style="width:15%;">
-              <col style="width:10%;">
-              <col style="width:13%;">
-              <col style="width:22%;">
-              <col style="width:20%;">
-              <col style="width:20%;">
-            </colgroup>
-            <thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th></tr></thead>
-            <tbody>{summary_rows}</tbody>
-          </table>
+          <div class="summary-month-groups">{summary_rows}</div>
           {confirmation_panels}
           </div>
         </section>
@@ -2414,22 +2403,23 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
             ad_budget = round(vat_excluded * 0.035)
             return vat_excluded, ad_budget
 
-        summary_html = "\n".join(
-            f'<tr class="summary-row" data-day="{html.escape(month)}" data-po-count="{po_count}">'
-            f"<td>{html.escape(month)}</td><td>{po_count:,}</td>"
-            f'<td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td>'
-            f'<td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td></tr>'
-            for month, qty, amount, po_count in summary_rows
-        )
-        total_qty = sum(qty for _month, qty, _amount, _po_count in summary_rows)
-        total_amount = sum(amount for _month, _qty, amount, _po_count in summary_rows)
-        total_po_count = sum(po_count for _month, _qty, _amount, po_count in summary_rows)
-        total_vat_excluded, total_ad_budget = sales_extra_amounts(total_amount)
-        summary_html += (
-            f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;">'
-            f'<td>총합계</td><td class="summary-total-po">{total_po_count:,}</td><td class="summary-total-qty">{total_qty:,}</td><td class="summary-total-amount">{total_amount:,}원</td>'
-            f'<td class="summary-total-vat">{total_vat_excluded:,}원</td><td class="summary-total-budget">{total_ad_budget:,}원</td></tr>'
-        )
+        summary_by_month = defaultdict(list)
+        for row in summary_rows: summary_by_month[str(row[0])[:7]].append(row)
+        latest_summary_month = max(summary_by_month.keys())
+        summary_sections = []
+        for month in sorted(summary_by_month.keys(), reverse=True):
+            rows_for_month = sorted(summary_by_month[month], key=lambda row: str(row[0]))
+            body = "".join(
+                f'<tr class="summary-row" data-day="{html.escape(str(day))}" data-po-count="{po_count}"><td>{html.escape(str(day))}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td></tr>'
+                for day, qty, amount, po_count in rows_for_month
+            )
+            month_qty = sum(row[1] for row in rows_for_month); month_amount = sum(row[2] for row in rows_for_month); month_po = sum(row[3] for row in rows_for_month)
+            month_vat, month_budget = sales_extra_amounts(month_amount)
+            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td>{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td>{month_vat:,}원</td><td>{month_budget:,}원</td></tr>'
+            open_attr = " open" if month == latest_summary_month else ""
+            table = f'<table class="summary-table resizable-table"><colgroup><col style="width:15%;"><col style="width:10%;"><col style="width:13%;"><col style="width:22%;"><col style="width:20%;"><col style="width:20%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th></tr></thead><tbody>{body}</tbody></table>'
+            summary_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 일자별 합계</summary>{table}</details>')
+        summary_html = "".join(summary_sections)
         confirmation_tools = (
             '<div class="invoice-check"><form method="post" action="/sales/confirm" class="confirm-form">'
             '<strong>과거 완료 자료</strong><label>기존 확인 완료 월<input class="confirm-money" type="month" name="month" required></label>'
@@ -2449,7 +2439,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
             month_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 계산서 확인</summary>{"".join(panels_by_month[month])}</details>')
         confirmation_panels = confirmation_tools + "".join(month_sections)
     else:
-        summary_html = '<tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr>'
+        summary_html = '<div class="invoice-check">아직 누적된 월매출 자료가 없습니다.</div>'
 
     if visible_detail_rows:
         by_day = defaultdict(list)
@@ -3238,6 +3228,23 @@ class BonnieHandler(BaseHTTPRequestHandler):
             '<a href="/logout" style="color:#fff;font-weight:800;text-decoration:none;">로그아웃</a>'
             '</div>'
         )
+        date_cleanup = """
+<style>
+  input[type="date"].date-empty:not(:focus) { color:transparent !important; }
+  input[type="date"].date-empty:not(:focus)::-webkit-datetime-edit { color:transparent; }
+</style>
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    document.querySelectorAll('input[type="date"]').forEach(function(input) {
+      function syncEmptyDate() { input.classList.toggle("date-empty", !input.value); }
+      input.addEventListener("input", syncEmptyDate);
+      input.addEventListener("change", syncEmptyDate);
+      syncEmptyDate();
+    });
+  });
+</script>
+"""
+        text = text.replace("</head>", f"{date_cleanup}</head>", 1)
         return text.replace("</aside>", f"{admin_link}{user_html}</aside>", 1)
 
     def page(self, message: str = "") -> str:
