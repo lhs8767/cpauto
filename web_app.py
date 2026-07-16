@@ -931,6 +931,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var detailKeyword = (document.getElementById("detail-keyword")?.value || "").trim().toLowerCase();
       var visibleByDay = {};
       var visibleByMonth = {};
+      var visibleDetailTotals = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
         var haystack = (row.dataset.search || "").toLowerCase();
         var show = inDateRange(row.dataset.day, detailFrom, detailTo) && (!detailKeyword || haystack.includes(detailKeyword));
@@ -938,10 +939,22 @@ SALES_PAGE = """<!DOCTYPE html>
         if (show) {
           visibleByDay[row.dataset.day] = true;
           visibleByMonth[row.dataset.month] = true;
+          var qtyInput = row.querySelector(".qty-input");
+          var qty = qtyInput ? Number(qtyInput.value || "0") : parseMoney(row.children[2]?.textContent || "0");
+          var amount = qty * Number(row.dataset.unitPrice || "0");
+          if (!visibleDetailTotals[row.dataset.day]) visibleDetailTotals[row.dataset.day] = { qty: 0, amount: 0 };
+          visibleDetailTotals[row.dataset.day].qty += qty;
+          visibleDetailTotals[row.dataset.day].amount += amount;
         }
       });
       document.querySelectorAll(".detail-day-row").forEach(function(row) {
-        row.style.display = visibleByDay[row.dataset.day] ? "" : "none";
+        var visible = visibleByDay[row.dataset.day];
+        row.style.display = visible ? "" : "none";
+        var total = visibleDetailTotals[row.dataset.day];
+        var label = row.querySelector('[data-day-total="' + row.dataset.day + '"]');
+        if (visible && total && label) {
+          label.textContent = row.dataset.day + " 합계: 수량 " + total.qty.toLocaleString("ko-KR") + "개 / 금액 " + money(total.amount);
+        }
       });
       document.querySelectorAll(".month-folder").forEach(function(row) {
         row.style.display = visibleByMonth[row.dataset.month] ? "" : "none";
@@ -2530,8 +2543,8 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 day_amount = sum(row[6] for row in by_day[day])
                 hidden_class = " month-hidden" if folder_mode else ""
                 parts.append(
-                    f'<tr class="detail-day-row{hidden_class}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" data-day-total="{html.escape(str(day), quote=True)}" style="background:#e8f1fb;color:#1f4e79;">'
-                    f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 '
+                    f'<tr class="detail-day-row{hidden_class}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" style="background:#e8f1fb;color:#1f4e79;">'
+                    f'<span data-day-total="{html.escape(str(day), quote=True)}">{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원</span> '
                     f'<button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_day" value="{html.escape(str(day), quote=True)}" onclick="return confirmDeleteDay(\'{html.escape(str(day), quote=True)}\')">일자 삭제</button></th></tr>'
                 )
                 for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
