@@ -900,18 +900,20 @@ SALES_PAGE = """<!DOCTYPE html>
 
       var summaryFrom = document.getElementById("summary-from")?.value || "";
       var summaryTo = document.getElementById("summary-to")?.value || "";
-      var visibleSummary = { po: 0, qty: 0, amount: 0 };
+      var visibleSummaryByMonth = {};
       document.querySelectorAll(".summary-row").forEach(function(row) {
         var show = inDateRange(row.dataset.day, summaryFrom, summaryTo);
         row.style.display = show ? "" : "none";
         if (show) {
-          visibleSummary.po += Number(row.dataset.poCount || "0");
-          visibleSummary.qty += parseMoney(row.querySelector(".summary-qty").textContent);
-          visibleSummary.amount += parseMoney(row.querySelector(".summary-amount").textContent);
+          var month = row.dataset.month || row.dataset.day.slice(0, 7);
+          if (!visibleSummaryByMonth[month]) visibleSummaryByMonth[month] = { po: 0, qty: 0, amount: 0 };
+          visibleSummaryByMonth[month].po += Number(row.dataset.poCount || "0");
+          visibleSummaryByMonth[month].qty += parseMoney(row.querySelector(".summary-qty").textContent);
+          visibleSummaryByMonth[month].amount += parseMoney(row.querySelector(".summary-amount").textContent);
         }
       });
-      var summaryTotal = document.querySelector(".summary-total-row");
-      if (summaryTotal) {
+      document.querySelectorAll(".summary-total-row").forEach(function(summaryTotal) {
+        var visibleSummary = visibleSummaryByMonth[summaryTotal.dataset.month] || { po: 0, qty: 0, amount: 0 };
         var vat = Math.round(visibleSummary.amount / 1.1);
         var budget = Math.round(vat * 0.035);
         var totalPo = summaryTotal.querySelector(".summary-total-po");
@@ -924,7 +926,7 @@ SALES_PAGE = """<!DOCTYPE html>
         if (totalAmount) totalAmount.textContent = money(visibleSummary.amount);
         if (totalVat) totalVat.textContent = money(vat);
         if (totalBudget) totalBudget.textContent = money(budget);
-      }
+      });
 
       var detailFrom = document.getElementById("detail-from")?.value || "";
       var detailTo = document.getElementById("detail-to")?.value || "";
@@ -2503,11 +2505,11 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 day_text = str(day)
                 cells, is_complete = render_confirmation_cells(day_text, amount, confirmation_days.get(day_text, {}), day_text[:7] in completed_months)
                 complete_class = " is-complete" if is_complete else ""
-                body_parts.append(f'<tr class="summary-row{complete_class}" data-day="{html.escape(day_text)}" data-po-count="{po_count}"><td>{html.escape(day_text)}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td>{cells}</tr>')
+                body_parts.append(f'<tr class="summary-row{complete_class}" data-day="{html.escape(day_text)}" data-month="{html.escape(month, quote=True)}" data-po-count="{po_count}"><td>{html.escape(day_text)}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td>{cells}</tr>')
             body = "".join(body_parts)
             month_qty = sum(row[1] for row in rows_for_month); month_amount = sum(row[2] for row in rows_for_month); month_po = sum(row[3] for row in rows_for_month)
             month_vat, month_budget = sales_extra_amounts(month_amount)
-            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td class="summary-total-po">{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td class="summary-total-vat">{month_vat:,}원</td><td class="summary-total-budget">{month_budget:,}원</td><td colspan="3"></td></tr>'
+            body += f'<tr class="summary-total-row" data-month="{html.escape(month, quote=True)}" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td class="summary-total-po">{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td class="summary-total-vat">{month_vat:,}원</td><td class="summary-total-budget">{month_budget:,}원</td><td colspan="3"></td></tr>'
             open_attr = " open" if month == latest_summary_month else ""
             table = f'<table class="summary-table resizable-table"><colgroup><col style="width:8%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:18%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead><tbody>{body}</tbody></table>'
             summary_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 일자별 합계</summary>{table}</details>')
