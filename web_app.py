@@ -644,14 +644,18 @@ SALES_PAGE = """<!DOCTYPE html>
     .summary-table th, .summary-table td { text-align:center; white-space:normal; }
     .summary-table th:first-child, .summary-table td:first-child { text-align:left; }
     .invoice-check { padding:12px; border-top:1px solid #d8e4ef; background:#fbfdff; }
-    .invoice-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-height:34px; }
-    .invoice-head strong { min-width:105px; color:#173f68; }
-    .invoice-total { font-weight:900; color:#344054; }
+    .invoice-row { display:grid; grid-template-columns:120px 210px 150px minmax(420px,1fr); align-items:end; gap:12px; width:100%; }
+    .invoice-row strong { color:#173f68; padding-bottom:8px; }
+    .invoice-total-block { display:flex; flex-direction:column; gap:4px; color:#667085; font-size:12px; }
+    .invoice-total { font-size:15px; font-weight:900; color:#344054; }
+    .invoice-row > .status-badge { align-self:center; justify-self:start; }
+    .invoice-row .confirm-form { display:grid; grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) auto; gap:10px; width:100%; }
     .invoice-detail { margin-top:8px; border:1px solid #d8e4ef; border-radius:7px; background:#fff; }
     .invoice-detail > summary { cursor:pointer; padding:8px 10px; color:#1f4e79; font-weight:900; }
     .invoice-detail-body { padding:0 10px 10px; }
     .invoice-toolbar { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid #d8e4ef; background:#f8fafc; }
     .invoice-check.completed-hidden { display:none; }
+    @media (max-width:1100px) { .invoice-row { grid-template-columns:120px 190px 1fr; } .invoice-row .confirm-form { grid-column:1 / -1; } }
     .confirm-form { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
     .confirm-form label { display:flex; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
     .confirm-form .confirm-check { flex-direction:row; align-items:center; padding-bottom:7px; }
@@ -2395,11 +2399,13 @@ def render_confirmation_panel(day: str, sales_amount: int, record: dict[str, obj
         f'<label>계산서 번호<input class="confirm-money" name="invoice_number" required placeholder="계산서 번호"></label><label>발행 금액<input class="confirm-money" name="invoice_amount" inputmode="numeric" required placeholder="금액 입력"></label>'
         f'<button class="confirm-action" type="submit" name="action" value="add_invoice">계산서 추가</button>{reconfirm}</form>')
     invoice_table = f'<table class="history-table" style="margin-top:10px;"><thead><tr><th>계산서 번호</th><th>발행 금액</th><th>등록자</th><th>등록일시</th><th>관리</th></tr></thead><tbody>{invoice_rows}</tbody></table>' if invoice_rows else ""
-    detail_body = f'<div class="invoice-detail-body">{entry_form}{invoice_table}<div class="confirm-states">{"".join(states)}</div>{meta}<details class="history-details"><summary>변경 이력 보기</summary>{render_confirmation_history(record)}</details></div>'
+    history = record.get("history", []) if isinstance(record.get("history", []), list) else []
+    history_detail = f'<details class="history-details"><summary>변경 이력 보기</summary>{render_confirmation_history(record)}</details>' if history else ""
+    detail_body = f'<div class="invoice-detail-body">{invoice_table}<div class="confirm-states">{"".join(states)}</div>{meta}{history_detail}</div>'
     complete_class = " is-complete" if confirmed else ""
-    head = f'<div class="invoice-head"><strong>{html.escape(day)}</strong><span>납품 총금액</span><span class="invoice-total">{sales_amount:,}원</span><span class="status-badge {css}">{label}</span></div>'
+    head = f'<div class="invoice-row"><strong>{html.escape(day)}</strong><div class="invoice-total-block"><span>납품 총금액</span><span class="invoice-total">{sales_amount:,}원</span></div><span class="status-badge {css}">{label}</span>{entry_form if not confirmed else ""}</div>'
     if confirmed:
-        content = f'<details class="invoice-detail"><summary>상세 보기 / 수정</summary>{detail_body}</details>'
+        content = f'<details class="invoice-detail"><summary>계산서 상세 보기 / 수정</summary><div class="invoice-detail-body">{entry_form}{invoice_table}<div class="confirm-states">{"".join(states)}</div>{meta}{history_detail}</div></details>'
     else:
         content = detail_body
     return f'<div class="invoice-check{complete_class}">{head}{content}</div>'
@@ -2450,7 +2456,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         for day, _qty, amount, _po_count in sorted(summary_rows, reverse=True):
             day_text = str(day)
             if day_text[:7] in completed_months:
-                panels_by_month[day_text[:7]].append(f'<div class="invoice-check is-complete"><div class="invoice-head"><strong>{html.escape(day_text)}</strong><span class="status-badge status-ok">기존 계산서 확인 완료</span></div></div>')
+                panels_by_month[day_text[:7]].append(f'<div class="invoice-check is-complete"><div class="invoice-row"><strong>{html.escape(day_text)}</strong><span class="status-badge status-ok">기존 계산서 확인 완료</span></div></div>')
             else:
                 panels_by_month[day_text[:7]].append(render_confirmation_panel(day_text, amount, confirmation_days.get(day_text, {})))
         latest_invoice_month = max(panels_by_month.keys()) if panels_by_month else ""
