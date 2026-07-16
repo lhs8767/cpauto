@@ -696,12 +696,12 @@ SALES_PAGE = """<!DOCTYPE html>
     .year-table td:first-child { text-align:left; font-weight:700; }
     .auto-cell { background:#f7fbff; font-weight:700; }
     .over-cell.negative { color:#c1121f; font-weight:800; }
-    .lookup-row { display:grid; grid-template-columns:repeat(5, minmax(120px, 1fr)); gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
-    .lookup-row label { display:flex; flex-direction:column; gap:5px; color:#475467; font-size:12px; font-weight:700; }
-    .lookup-row input, .lookup-row select { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:8px 9px; font:inherit; background:#fff; }
-    .lookup-row .lookup-reset { align-self:end; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; }
-    .inline-delete-form { align-self:end; margin:0; }
-    .inline-delete-form .delete-btn { width:100%; }
+    .lookup-row { display:flex; align-items:flex-end; flex-wrap:wrap; gap:8px; padding:9px 14px; border-bottom:1px solid var(--line); background:#fbfcfe; }
+    .lookup-row label { display:flex; flex:0 1 200px; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
+    .lookup-row input, .lookup-row select { width:100%; height:32px; border:1px solid #b9c6d8; border-radius:6px; padding:5px 8px; font:inherit; background:#fff; }
+    .lookup-row .lookup-reset { flex:0 0 140px; height:32px; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:5px 9px; font-weight:800; cursor:pointer; }
+    .inline-delete-form { flex:0 0 140px; align-self:end; margin:0; }
+    .inline-delete-form .delete-btn { width:100%; height:32px; }
     .panel-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .toggle-btn { border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; font-size:13px; }
     .delete-btn { border:1px solid #fecdca; background:#fff5f5; color:#b42318; border-radius:6px; padding:7px 9px; font-weight:800; cursor:pointer; font-size:12px; }
@@ -713,7 +713,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:2; }
     .col-resizer:hover, .col-resizer.active { background:rgba(31,78,121,.22); }
     .scroll { max-height:520px; overflow:auto; }
-    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} }
+    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row label{flex:1 1 180px;} }
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
@@ -914,11 +914,16 @@ SALES_PAGE = """<!DOCTYPE html>
       if (summaryTotal) {
         var vat = Math.round(visibleSummary.amount / 1.1);
         var budget = Math.round(vat * 0.035);
-        summaryTotal.querySelector(".summary-total-po").textContent = visibleSummary.po.toLocaleString("ko-KR");
-        summaryTotal.querySelector(".summary-total-qty").textContent = visibleSummary.qty.toLocaleString("ko-KR");
-        summaryTotal.querySelector(".summary-total-amount").textContent = money(visibleSummary.amount);
-        summaryTotal.querySelector(".summary-total-vat").textContent = money(vat);
-        summaryTotal.querySelector(".summary-total-budget").textContent = money(budget);
+        var totalPo = summaryTotal.querySelector(".summary-total-po");
+        var totalQty = summaryTotal.querySelector(".summary-total-qty");
+        var totalAmount = summaryTotal.querySelector(".summary-total-amount");
+        var totalVat = summaryTotal.querySelector(".summary-total-vat");
+        var totalBudget = summaryTotal.querySelector(".summary-total-budget");
+        if (totalPo) totalPo.textContent = visibleSummary.po.toLocaleString("ko-KR");
+        if (totalQty) totalQty.textContent = visibleSummary.qty.toLocaleString("ko-KR");
+        if (totalAmount) totalAmount.textContent = money(visibleSummary.amount);
+        if (totalVat) totalVat.textContent = money(vat);
+        if (totalBudget) totalBudget.textContent = money(budget);
       }
 
       var detailFrom = document.getElementById("detail-from")?.value || "";
@@ -2489,7 +2494,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
             body = "".join(body_parts)
             month_qty = sum(row[1] for row in rows_for_month); month_amount = sum(row[2] for row in rows_for_month); month_po = sum(row[3] for row in rows_for_month)
             month_vat, month_budget = sales_extra_amounts(month_amount)
-            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td>{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td>{month_vat:,}원</td><td>{month_budget:,}원</td><td colspan="3"></td></tr>'
+            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td class="summary-total-po">{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td class="summary-total-vat">{month_vat:,}원</td><td class="summary-total-budget">{month_budget:,}원</td><td colspan="3"></td></tr>'
             open_attr = " open" if month == latest_summary_month else ""
             table = f'<table class="summary-table resizable-table"><colgroup><col style="width:8%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:18%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead><tbody>{body}</tbody></table>'
             summary_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 일자별 합계</summary>{table}</details>')
