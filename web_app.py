@@ -127,12 +127,12 @@ def backup_sales_files_to_supabase() -> None:
 def load_sales_confirmations() -> dict[str, object]:
     restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH)
     if not SALES_CONFIRM_PATH.exists():
-        return {"months": {}}
+        return {"days": {}}
     try:
         data = json.loads(SALES_CONFIRM_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {"months": {}}
+        return data if isinstance(data, dict) else {"days": {}}
     except (OSError, json.JSONDecodeError):
-        return {"months": {}}
+        return {"days": {}}
 
 
 def save_sales_confirmations(data: dict[str, object]) -> None:
@@ -141,9 +141,9 @@ def save_sales_confirmations(data: dict[str, object]) -> None:
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
 
 
-def sales_confirmation(month: str) -> dict[str, object]:
-    months = load_sales_confirmations().get("months", {})
-    value = months.get(month, {}) if isinstance(months, dict) else {}
+def sales_confirmation(day: str) -> dict[str, object]:
+    days = load_sales_confirmations().get("days", {})
+    value = days.get(day, {}) if isinstance(days, dict) else {}
     return value if isinstance(value, dict) else {}
 
 
@@ -2362,35 +2362,42 @@ def render_confirmation_history(record: dict[str, object]) -> str:
     return f'<div class="history-scroll"><table class="history-table"><thead><tr><th>일시</th><th>작업자</th><th>구분</th><th>변경 내용</th><th>사유</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
 
 
-def render_confirmation_panel(month: str, sales_amount: int, record: dict[str, object] | None = None) -> str:
+def render_confirmation_panel(day: str, sales_amount: int, record: dict[str, object] | None = None) -> str:
     record = record if isinstance(record, dict) else {}
-    invoice_amount = parse_int(record.get("invoice_amount", 0))
+    invoices = record.get("invoices", []) if isinstance(record.get("invoices", []), list) else []
+    invoice_amount = sum(parse_int(item.get("amount", 0)) for item in invoices if isinstance(item, dict))
+    remaining = sales_amount - invoice_amount
     confirmed = bool(record.get("confirmed")); needs_recheck = bool(record.get("needs_recheck"))
     if not invoice_amount: label, css = "확인 필요", "status-warn"
-    elif invoice_amount == sales_amount: label, css = "금액 매칭 완료", "status-ok"
-    else: label, css = f"금액 불일치 (차액 {invoice_amount-sales_amount:+,}원)", "status-bad"
+    elif remaining == 0: label, css = "금액 매칭 완료", "status-ok"
+    elif remaining > 0: label, css = f"미발행 잔액 {remaining:,}원", "status-warn"
+    else: label, css = f"초과 발행 {-remaining:,}원", "status-bad"
     states = []
     if confirmed: states.append('<span class="status-badge status-ok">계산서 발행 확인 완료</span>')
     if record.get("edited_after_confirm"): states.append('<span class="status-badge status-bad">확인 완료 후 수정됨</span>')
     if needs_recheck: states.append('<span class="status-badge status-warn">재확인 필요</span>')
-    checked = " checked" if confirmed else ""
-    reconfirm = '<button class="confirm-action" type="submit" name="action" value="reconfirm">재확인 완료</button>' if confirmed and needs_recheck and invoice_amount == sales_amount else ""
+    reconfirm = '<button class="confirm-action" type="submit" name="action" value="reconfirm" formnovalidate>재확인 완료</button>' if confirmed and needs_recheck and remaining == 0 else ""
     meta = f'<div class="confirm-meta">확인자: {html.escape(str(record.get("confirmed_by", "")))} · 확인일시: {html.escape(str(record.get("confirmed_at", "")))}</div>' if confirmed else ""
+    invoice_rows = "".join(
+        f'<tr><td>{html.escape(str(item.get("number", "")))}</td><td>{parse_int(item.get("amount", 0)):,}원</td><td>{html.escape(str(item.get("user", "")))}</td><td>{html.escape(str(item.get("at", "")))}</td><td><form method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></td></tr>'
+        for item in invoices if isinstance(item, dict)
+    ) or '<tr><td colspan="5">등록된 계산서가 없습니다.</td></tr>'
     return (f'<div class="invoice-check"><form method="post" action="/sales/confirm" class="confirm-form">'
-        f'<input type="hidden" name="month" value="{html.escape(month, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
-        f'<strong>{html.escape(month)} 계산서 확인</strong><label>매출확인용 금액<input class="confirm-money" value="{sales_amount:,}" readonly></label>'
-        f'<label>세금계산서 발행 금액<input class="confirm-money" name="invoice_amount" inputmode="numeric" value="{invoice_amount or ""}" placeholder="금액 입력"></label>'
-        f'<span class="status-badge {css}">{label}</span><label class="confirm-check"><input type="checkbox" name="confirmed" value="1"{checked} onchange="if(!this.checked&&!confirm(\'계산서 발행 확인 완료 상태를 해제하시겠습니까?\'))this.checked=true;"> 계산서 발행 확인 완료</label>'
-        f'<button class="confirm-action" type="submit" name="action" value="save">저장</button>{reconfirm}</form><div class="confirm-states">{"".join(states)}</div>{meta}'
+        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
+        f'<strong>{html.escape(day)} 계산서 확인</strong><label>납품 총금액<input class="confirm-money" value="{sales_amount:,}" readonly></label>'
+        f'<label>계산서 번호<input class="confirm-money" name="invoice_number" required placeholder="계산서 번호"></label><label>발행 금액<input class="confirm-money" name="invoice_amount" inputmode="numeric" required placeholder="금액 입력"></label>'
+        f'<span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" name="action" value="add_invoice">계산서 추가</button>{reconfirm}</form>'
+        f'<table class="history-table" style="margin-top:10px;"><thead><tr><th>계산서 번호</th><th>발행 금액</th><th>등록자</th><th>등록일시</th><th>관리</th></tr></thead><tbody>{invoice_rows}</tbody></table><div class="confirm-states">{"".join(states)}</div>{meta}'
         f'<details class="history-details"><summary>변경 이력 보기</summary>{render_confirmation_history(record)}</details></div>')
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=not folder_mode)
     confirmation_data = load_sales_confirmations()
-    confirmation_months = confirmation_data.get("months", {})
-    if not isinstance(confirmation_months, dict):
-        confirmation_months = {}
+    confirmation_days = confirmation_data.get("days", {})
+    if not isinstance(confirmation_days, dict): confirmation_days = {}
+    completed_months = confirmation_data.get("completed_months", [])
+    if not isinstance(completed_months, list): completed_months = []
     current_month = datetime.now().strftime("%Y-%m")
     visible_detail_rows = detail_rows if folder_mode else [
         row for row in detail_rows if str(row[1]).startswith(current_month)
@@ -2418,13 +2425,17 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
             f'<td>총합계</td><td class="summary-total-po">{total_po_count:,}</td><td class="summary-total-qty">{total_qty:,}</td><td class="summary-total-amount">{total_amount:,}원</td>'
             f'<td class="summary-total-vat">{total_vat_excluded:,}원</td><td class="summary-total-budget">{total_ad_budget:,}원</td></tr>'
         )
-        month_amounts = defaultdict(int)
-        for day, _qty, amount, _po_count in summary_rows:
-            month_amounts[str(day)[:7]] += amount
-        confirmation_panels = "".join(
-            render_confirmation_panel(month, amount, confirmation_months.get(month, {}))
-            for month, amount in sorted(month_amounts.items(), reverse=True)
+        confirmation_panels = (
+            '<div class="invoice-check"><form method="post" action="/sales/confirm" class="confirm-form">'
+            '<strong>과거 완료 자료</strong><label>기존 확인 완료 월<input class="confirm-money" type="month" name="month" required></label>'
+            '<button class="confirm-action" type="submit" name="action" value="skip_month" onclick="return confirm(\'선택한 월 전체를 기존 확인 완료로 처리할까요?\')">기존 완료 월 처리</button></form></div>'
         )
+        for day, _qty, amount, _po_count in sorted(summary_rows, reverse=True):
+            day_text = str(day)
+            if day_text[:7] in completed_months:
+                confirmation_panels += f'<div class="invoice-check"><strong>{html.escape(day_text)}</strong> <span class="status-badge status-ok">기존 계산서 확인 완료</span></div>'
+            else:
+                confirmation_panels += render_confirmation_panel(day_text, amount, confirmation_days.get(day_text, {}))
     else:
         summary_html = '<tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr>'
 
@@ -2455,8 +2466,9 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 )
                 for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
                     changed_class = " changed" if changed else ""
-                    month_record = confirmation_months.get(str(day)[:7], {})
-                    month_confirmed = str(bool(month_record.get("confirmed")) if isinstance(month_record, dict) else False).lower()
+                    day_record = confirmation_days.get(str(day), {})
+                    day_confirmed = bool(day_record.get("confirmed")) if isinstance(day_record, dict) else False
+                    month_confirmed = str(day_confirmed or str(day)[:7] in completed_months).lower()
                     if folder_mode:
                         parts.append(
                             f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
@@ -3018,23 +3030,41 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
 
 
 def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
-    month = form["month"].value.strip() if "month" in form else ""
-    sales_amount = parse_int(form["sales_amount"].value) if "sales_amount" in form else 0
-    invoice_amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
     action = form["action"].value.strip() if "action" in form else "save"
-    wants_confirmed = "confirmed" in form or action == "reconfirm"
-    if not re.fullmatch(r"\d{4}-\d{2}", month): raise ValueError("확인할 월이 올바르지 않습니다.")
-    if wants_confirmed and (not invoice_amount or invoice_amount != sales_amount): raise ValueError("두 금액이 정확히 일치할 때만 계산서 발행 확인을 완료할 수 있습니다.")
-    data = load_sales_confirmations(); months = data.setdefault("months", {}); record = months.setdefault(month, {})
-    old_confirmed = bool(record.get("confirmed")); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); history = record.setdefault("history", [])
-    if old_confirmed and not wants_confirmed: history.append({"at":now,"user":username,"action":"확인 완료 해제","reason":"사용자 확인 후 해제","changes":[]})
-    elif action == "reconfirm": history.append({"at":now,"user":username,"action":"재확인 완료","reason":"기존 변경 이력 확인","changes":[]})
-    elif wants_confirmed and not old_confirmed: history.append({"at":now,"user":username,"action":"계산서 발행 확인 완료","reason":"금액 일치 확인","changes":[]})
-    record.update({"invoice_amount":invoice_amount,"sales_amount":sales_amount,"confirmed":wants_confirmed})
-    if wants_confirmed: record.update({"confirmed_by":username,"confirmed_at":now,"confirmed_invoice_amount":invoice_amount,"confirmed_sales_amount":sales_amount})
-    if action == "reconfirm": record.update({"needs_recheck":False,"edited_after_confirm":False,"reconfirmed_by":username,"reconfirmed_at":now})
+    data = load_sales_confirmations(); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if action == "skip_month":
+        month = form["month"].value.strip() if "month" in form else ""
+        if not re.fullmatch(r"\d{4}-\d{2}", month): raise ValueError("완료 처리할 월을 선택해 주세요.")
+        completed = data.setdefault("completed_months", [])
+        if month not in completed: completed.append(month)
+        save_sales_confirmations(data)
+        return f"{month} 전체를 기존 계산서 확인 완료로 처리했습니다."
+    day = form["day"].value.strip() if "day" in form else ""
+    sales_amount = parse_int(form["sales_amount"].value) if "sales_amount" in form else 0
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day): raise ValueError("확인할 납품일자가 올바르지 않습니다.")
+    days = data.setdefault("days", {}); record = days.setdefault(day, {}); invoices = record.setdefault("invoices", []); history = record.setdefault("history", [])
+    if action == "add_invoice":
+        number = form["invoice_number"].value.strip() if "invoice_number" in form else ""
+        amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
+        if not number or amount <= 0: raise ValueError("계산서 번호와 발행 금액을 입력해 주세요.")
+        if any(str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)): raise ValueError("이미 등록된 계산서 번호입니다.")
+        invoices.append({"id":uuid.uuid4().hex[:12],"number":number,"amount":amount,"user":username,"at":now})
+        history.append({"at":now,"user":username,"action":"계산서 추가","reason":number,"changes":[{"field":"발행 금액","before":0,"after":amount}]})
+    elif action == "delete_invoice":
+        invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
+        removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
+        if removed is None: raise ValueError("삭제할 계산서를 찾지 못했습니다.")
+        invoices.remove(removed); history.append({"at":now,"user":username,"action":"계산서 삭제","reason":str(removed.get("number","")),"changes":[]})
+    total = sum(parse_int(item.get("amount",0)) for item in invoices if isinstance(item,dict))
+    matched = total == sales_amount and sales_amount > 0
+    record.update({"sales_amount":sales_amount,"confirmed":matched})
+    if matched:
+        record.update({"confirmed_by":username,"confirmed_at":now,"confirmed_invoice_amount":total,"confirmed_sales_amount":sales_amount})
+    if action == "reconfirm" and matched:
+        record.update({"needs_recheck":False,"edited_after_confirm":False,"reconfirmed_by":username,"reconfirmed_at":now})
+        history.append({"at":now,"user":username,"action":"재확인 완료","reason":"기존 변경 이력 확인","changes":[]})
     save_sales_confirmations(data)
-    return f"{month} " + ("변경 이력을 확인하고 재확인 완료했습니다." if action == "reconfirm" else "계산서 발행 확인 정보를 저장했습니다.")
+    return f"{day} 계산서 정보를 저장했습니다. 현재 미발행 잔액은 {sales_amount-total:,}원입니다."
 
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
@@ -3045,7 +3075,7 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
 
     changed = 0
     override_reason = form["override_reason"].value.strip() if "override_reason" in form else ""
-    confirmation_data = load_sales_confirmations(); confirmation_months = confirmation_data.setdefault("months", {}); audit_by_month = defaultdict(list)
+    confirmation_data = load_sales_confirmations(); confirmation_days = confirmation_data.setdefault("days", {}); completed_months = confirmation_data.setdefault("completed_months", []); audit_by_day = defaultdict(list)
     for item in row_values:
         row = parse_int(item.value)
         if row < 2 or row > ws.max_row:
@@ -3068,16 +3098,17 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             row_changes.append({"field":f"{ws.cell(row,4).value} 메모","before":old_memo,"after":new_memo})
             ws.cell(row, 11).value = new_memo
             changed += 1
-        month = str(ws.cell(row,1).value or "")[:7]; record = confirmation_months.get(month,{})
-        if row_changes and isinstance(record,dict) and record.get("confirmed"):
+        day = str(ws.cell(row,1).value or ""); record = confirmation_days.get(day,{})
+        is_confirmed = (isinstance(record,dict) and record.get("confirmed")) or day[:7] in completed_months
+        if row_changes and is_confirmed:
             if not override_reason: raise ValueError("계산서 발행 확인 완료 건을 수정하려면 수정 사유가 필요합니다.")
-            audit_by_month[month].extend(row_changes)
+            audit_by_day[day].extend(row_changes)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for month, changes in audit_by_month.items():
-        record = confirmation_months.setdefault(month,{}); record["needs_recheck"] = True; record["edited_after_confirm"] = True
+    for day, changes in audit_by_day.items():
+        record = confirmation_days.setdefault(day,{}); record["needs_recheck"] = True; record["edited_after_confirm"] = True
         record.setdefault("history",[]).append({"at":now,"user":username,"action":"확인 완료 후 수정","reason":override_reason,"changes":changes})
     wb.save(SALES_LEDGER_PATH)
-    if audit_by_month: save_sales_confirmations(confirmation_data)
+    if audit_by_day: save_sales_confirmations(confirmation_data)
     write_sales_display_workbook()
     backup_sales_files_to_supabase()
     return changed
