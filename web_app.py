@@ -2362,8 +2362,8 @@ def render_confirmation_history(record: dict[str, object]) -> str:
     return f'<div class="history-scroll"><table class="history-table"><thead><tr><th>일시</th><th>작업자</th><th>구분</th><th>변경 내용</th><th>사유</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
 
 
-def render_confirmation_panel(month: str, sales_amount: int) -> str:
-    record = sales_confirmation(month)
+def render_confirmation_panel(month: str, sales_amount: int, record: dict[str, object] | None = None) -> str:
+    record = record if isinstance(record, dict) else {}
     invoice_amount = parse_int(record.get("invoice_amount", 0))
     confirmed = bool(record.get("confirmed")); needs_recheck = bool(record.get("needs_recheck"))
     if not invoice_amount: label, css = "확인 필요", "status-warn"
@@ -2387,6 +2387,10 @@ def render_confirmation_panel(month: str, sales_amount: int) -> str:
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=not folder_mode)
+    confirmation_data = load_sales_confirmations()
+    confirmation_months = confirmation_data.get("months", {})
+    if not isinstance(confirmation_months, dict):
+        confirmation_months = {}
     current_month = datetime.now().strftime("%Y-%m")
     visible_detail_rows = detail_rows if folder_mode else [
         row for row in detail_rows if str(row[1]).startswith(current_month)
@@ -2417,7 +2421,10 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         month_amounts = defaultdict(int)
         for day, _qty, amount, _po_count in summary_rows:
             month_amounts[str(day)[:7]] += amount
-        confirmation_panels = "".join(render_confirmation_panel(month, amount) for month, amount in sorted(month_amounts.items(), reverse=True))
+        confirmation_panels = "".join(
+            render_confirmation_panel(month, amount, confirmation_months.get(month, {}))
+            for month, amount in sorted(month_amounts.items(), reverse=True)
+        )
     else:
         summary_html = '<tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr>'
 
@@ -2448,7 +2455,8 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 )
                 for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
                     changed_class = " changed" if changed else ""
-                    month_confirmed = str(bool(sales_confirmation(str(day)[:7]).get("confirmed"))).lower()
+                    month_record = confirmation_months.get(str(day)[:7], {})
+                    month_confirmed = str(bool(month_record.get("confirmed")) if isinstance(month_record, dict) else False).lower()
                     if folder_mode:
                         parts.append(
                             f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
