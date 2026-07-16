@@ -655,6 +655,13 @@ SALES_PAGE = """<!DOCTYPE html>
     .invoice-detail-body { padding:0 10px 10px; }
     .invoice-toolbar { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid #d8e4ef; background:#f8fafc; }
     .invoice-check.completed-hidden { display:none; }
+    .summary-invoice-input { width:100%; min-width:110px; border:1px solid #b9c6d8; border-radius:5px; padding:6px 7px; font:inherit; text-align:right; }
+    .summary-invoice-number { text-align:left; }
+    .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .summary-invoice-actions .confirm-action { padding:6px 9px; font-size:12px; }
+    .summary-invoice-detail { width:100%; margin-top:4px; }
+    .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; font-size:12px; }
+    .summary-row.completed-hidden { display:none; }
     @media (max-width:1100px) { .invoice-row { grid-template-columns:120px 190px 1fr; } .invoice-row .confirm-form { grid-column:1 / -1; } }
     .confirm-form { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
     .confirm-form label { display:flex; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
@@ -1008,6 +1015,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var hiding = button.dataset.hiding !== "true";
       button.dataset.hiding = String(hiding);
       document.querySelectorAll('.invoice-check.is-complete').forEach(function(panel) { panel.classList.toggle('completed-hidden', hiding); });
+      document.querySelectorAll('.summary-row.is-complete').forEach(function(row) { row.classList.toggle('completed-hidden', hiding); });
       button.textContent = hiding ? "완료건 보이기" : "완료건 숨기기";
     }
     document.addEventListener("DOMContentLoaded", function() {
@@ -2411,6 +2419,43 @@ def render_confirmation_panel(day: str, sales_amount: int, record: dict[str, obj
     return f'<div class="invoice-check{complete_class}">{head}{content}</div>'
 
 
+def render_confirmation_cells(day: str, sales_amount: int, record: dict[str, object] | None = None, legacy_complete: bool = False) -> tuple[str, bool]:
+    record = record if isinstance(record, dict) else {}
+    invoices = record.get("invoices", []) if isinstance(record.get("invoices", []), list) else []
+    issued = sum(parse_int(item.get("amount", 0)) for item in invoices if isinstance(item, dict))
+    remaining = sales_amount - issued
+    confirmed = legacy_complete or bool(record.get("confirmed"))
+    if legacy_complete:
+        label, css = "기존 완료", "status-ok"
+    elif confirmed:
+        label, css = "매칭 완료", "status-ok"
+    elif issued and remaining > 0:
+        label, css = f"잔액 {remaining:,}원", "status-warn"
+    elif remaining < 0:
+        label, css = f"초과 {-remaining:,}원", "status-bad"
+    else:
+        label, css = "확인 필요", "status-warn"
+    form_id = f'invoice-{re.sub(r"\D", "", day)}'
+    disabled = " disabled" if legacy_complete else ""
+    number_cell = f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required{disabled}></td>'
+    amount_cell = f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required{disabled}></td>'
+    invoice_lines = "".join(
+        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
+        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 계산서를 삭제할까요?\')">'
+        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
+        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
+        for item in invoices if isinstance(item, dict)
+    )
+    details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
+    add_button = "" if legacy_complete else f'<button class="confirm-action" type="submit" form="{form_id}">추가</button>'
+    action_cell = (
+        f'<td><form id="{form_id}" method="post" action="/sales/confirm">'
+        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
+        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span>{add_button}</div>{details}</td>'
+    )
+    return number_cell + amount_cell + action_cell, confirmed
+
+
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=not folder_mode)
     confirmation_data = load_sales_confirmations()
@@ -2435,36 +2480,27 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_sections = []
         for month in sorted(summary_by_month.keys(), reverse=True):
             rows_for_month = sorted(summary_by_month[month], key=lambda row: str(row[0]))
-            body = "".join(
-                f'<tr class="summary-row" data-day="{html.escape(str(day))}" data-po-count="{po_count}"><td>{html.escape(str(day))}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td></tr>'
-                for day, qty, amount, po_count in rows_for_month
-            )
+            body_parts = []
+            for day, qty, amount, po_count in rows_for_month:
+                day_text = str(day)
+                cells, is_complete = render_confirmation_cells(day_text, amount, confirmation_days.get(day_text, {}), day_text[:7] in completed_months)
+                complete_class = " is-complete" if is_complete else ""
+                body_parts.append(f'<tr class="summary-row{complete_class}" data-day="{html.escape(day_text)}" data-po-count="{po_count}"><td>{html.escape(day_text)}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td>{cells}</tr>')
+            body = "".join(body_parts)
             month_qty = sum(row[1] for row in rows_for_month); month_amount = sum(row[2] for row in rows_for_month); month_po = sum(row[3] for row in rows_for_month)
             month_vat, month_budget = sales_extra_amounts(month_amount)
-            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td>{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td>{month_vat:,}원</td><td>{month_budget:,}원</td></tr>'
+            body += f'<tr class="summary-total-row" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td>{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td>{month_vat:,}원</td><td>{month_budget:,}원</td><td colspan="3"></td></tr>'
             open_attr = " open" if month == latest_summary_month else ""
-            table = f'<table class="summary-table resizable-table"><colgroup><col style="width:15%;"><col style="width:10%;"><col style="width:13%;"><col style="width:22%;"><col style="width:20%;"><col style="width:20%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th></tr></thead><tbody>{body}</tbody></table>'
+            table = f'<table class="summary-table resizable-table"><colgroup><col style="width:8%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:18%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead><tbody>{body}</tbody></table>'
             summary_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 일자별 합계</summary>{table}</details>')
-        summary_html = "".join(summary_sections)
-        confirmation_tools = (
-            '<div class="invoice-check"><form method="post" action="/sales/confirm" class="confirm-form">'
-            '<strong>과거 완료 자료</strong><label>기존 확인 완료 월<input class="confirm-money" type="month" name="month" required></label>'
-            '<button class="confirm-action" type="submit" name="action" value="skip_month" onclick="return confirm(\'선택한 월 전체를 기존 확인 완료로 처리할까요?\')">기존 완료 월 처리</button></form></div>'
-            '<div class="invoice-toolbar"><button class="toggle-btn" type="button" onclick="toggleCompletedInvoices(this)">완료건 숨기기</button></div>'
+        summary_html = (
+            '<div class="invoice-toolbar"><form method="post" action="/sales/confirm" class="summary-invoice-actions">'
+            '<label>기존 완료 월 <input type="month" name="month" required></label>'
+            '<button class="toggle-btn" type="submit" name="action" value="skip_month" onclick="return confirm(\'선택한 월 전체를 계산서 확인 완료로 처리할까요?\')">기존 완료 월 처리</button>'
+            '</form><button class="toggle-btn" type="button" onclick="toggleCompletedInvoices(this)">완료건 숨기기</button></div>'
+            + "".join(summary_sections)
         )
-        panels_by_month = defaultdict(list)
-        for day, _qty, amount, _po_count in sorted(summary_rows, reverse=True):
-            day_text = str(day)
-            if day_text[:7] in completed_months:
-                panels_by_month[day_text[:7]].append(f'<div class="invoice-check is-complete"><div class="invoice-row"><strong>{html.escape(day_text)}</strong><span class="status-badge status-ok">기존 계산서 확인 완료</span></div></div>')
-            else:
-                panels_by_month[day_text[:7]].append(render_confirmation_panel(day_text, amount, confirmation_days.get(day_text, {})))
-        latest_invoice_month = max(panels_by_month.keys()) if panels_by_month else ""
-        month_sections = []
-        for month in sorted(panels_by_month.keys(), reverse=True):
-            open_attr = " open" if month == latest_invoice_month else ""
-            month_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 계산서 확인</summary>{"".join(panels_by_month[month])}</details>')
-        confirmation_panels = confirmation_tools + "".join(month_sections)
+        confirmation_panels = ''
     else:
         summary_html = '<div class="invoice-check">아직 누적된 월매출 자료가 없습니다.</div>'
 
