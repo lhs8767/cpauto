@@ -776,10 +776,8 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function recalcSalesScreen() {
       var dayTotals = {};
-      var monthTotals = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
         var day = row.dataset.day;
-        var month = row.dataset.month;
         var originalQty = Number(row.dataset.originalQty || "0");
         var qtyInput = row.querySelector(".qty-input");
         var qty = qtyInput ? Number(qtyInput.value || "0") : Number((row.children[2]?.textContent || "0").replaceAll(",", ""));
@@ -792,8 +790,6 @@ SALES_PAGE = """<!DOCTYPE html>
         if (!dayTotals[day]) dayTotals[day] = { qty: 0, amount: 0 };
         dayTotals[day].qty += qty;
         dayTotals[day].amount += amount;
-        if (!monthTotals[month]) monthTotals[month] = 0;
-        monthTotals[month] += amount;
       });
       var totalQty = 0;
       var totalAmount = 0;
@@ -822,18 +818,6 @@ SALES_PAGE = """<!DOCTYPE html>
         totalRow.querySelector(".summary-total-vat").textContent = money(totalVat);
         totalRow.querySelector(".summary-total-budget").textContent = money(totalBudget);
       }
-      document.querySelectorAll(".year-row").forEach(function(row) {
-        var monthText = row.querySelector("td:first-child").textContent.replace("월", "").padStart(2, "0");
-        var year = new Date().getFullYear();
-        var key = year + "-" + monthText;
-        var monthAmount = monthTotals[key] || 0;
-        var vat = Math.round(monthAmount / 1.1);
-        var budget = Math.round(vat * 0.035);
-        row.dataset.sales = String(vat);
-        row.dataset.budget = String(budget);
-        row.querySelector(".year-sales").textContent = money(vat);
-        row.querySelector(".year-budget").textContent = money(budget);
-      });
       recalcYearScreen();
       applyLookups();
     }
