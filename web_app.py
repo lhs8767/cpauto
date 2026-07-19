@@ -791,33 +791,11 @@ SALES_PAGE = """<!DOCTYPE html>
         dayTotals[day].qty += qty;
         dayTotals[day].amount += amount;
       });
-      var totalQty = 0;
-      var totalAmount = 0;
       Object.keys(dayTotals).forEach(function(day) {
         document.querySelectorAll('[data-day-total="' + day + '"]').forEach(function(cell) {
           cell.textContent = day + " 합계: 수량 " + dayTotals[day].qty.toLocaleString("ko-KR") + "개 / 금액 " + money(dayTotals[day].amount);
         });
-        var summaryRow = document.querySelector('.summary-row[data-day="' + day + '"]');
-        if (summaryRow) {
-          var vat = Math.round(dayTotals[day].amount / 1.1);
-          var budget = Math.round(vat * 0.035);
-          summaryRow.querySelector(".summary-qty").textContent = dayTotals[day].qty.toLocaleString("ko-KR");
-          summaryRow.querySelector(".summary-amount").textContent = money(dayTotals[day].amount);
-          summaryRow.querySelector(".summary-vat").textContent = money(vat);
-          summaryRow.querySelector(".summary-budget").textContent = money(budget);
-        }
-        totalQty += dayTotals[day].qty;
-        totalAmount += dayTotals[day].amount;
       });
-      var totalVat = Math.round(totalAmount / 1.1);
-      var totalBudget = Math.round(totalVat * 0.035);
-      var totalRow = document.querySelector(".summary-total-row");
-      if (totalRow) {
-        totalRow.querySelector(".summary-total-qty").textContent = totalQty.toLocaleString("ko-KR");
-        totalRow.querySelector(".summary-total-amount").textContent = money(totalAmount);
-        totalRow.querySelector(".summary-total-vat").textContent = money(totalVat);
-        totalRow.querySelector(".summary-total-budget").textContent = money(totalBudget);
-      }
       recalcYearScreen();
       applyLookups();
     }
@@ -2461,7 +2439,10 @@ def render_confirmation_cells(day: str, sales_amount: int, record: dict[str, obj
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
-    summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=not folder_mode)
+    summary_rows, detail_rows = load_monthly_sales_summary(
+        limit_rows=300 if folder_mode else None,
+        aggregate_by_sku=not folder_mode,
+    )
     confirmation_data = load_sales_confirmations()
     confirmation_days = confirmation_data.get("days", {})
     if not isinstance(confirmation_days, dict): confirmation_days = {}
