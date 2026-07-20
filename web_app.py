@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+import xlrd
 from features.auth.pages import admin_page, login_page
 from features.auth.service import AuthManager
 
@@ -589,7 +590,7 @@ CHECK_PAGE = """<!DOCTYPE html>
                   <input type="date" name="date_to" value="{date_to}">
                 </label>
                 <label>심플웍스 엑셀
-                  <input type="file" name="simpleworks_file" accept=".xlsx" multiple>
+                  <input type="file" name="simpleworks_file" accept=".xls,.xlsx" multiple>
                 </label>
                 <label>심플웍스 캡쳐 이미지
                   <input type="file" name="simpleworks_image" accept=".png,.jpg,.jpeg,.bmp,.webp" multiple>
@@ -597,7 +598,7 @@ CHECK_PAGE = """<!DOCTYPE html>
               </div>
               <div style="margin-top:14px;"><button class="btn" type="submit">수량 검수하기</button></div>
             </form>
-            <div class="note">심플웍스 엑셀 또는 캡쳐 이미지를 여러 개 올릴 수 있습니다. 각 파일의 상품명 앞 노란 숫자를 `심플웍스 No`로 읽고, 같은 번호는 수량을 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
+            <div class="note">심플웍스에서 다운로드한 원본 엑셀(.xls, .xlsx)을 수정하지 않고 바로 올릴 수 있습니다. 상품명 앞의 `6554 :`, `ㄴ 7468 :` 형식을 심플웍스 No로 읽고 `3개`, `22개` 형식의 수량을 자동 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
           </div>
         </section>
         {result}
@@ -813,8 +814,8 @@ SALES_PAGE = """<!DOCTYPE html>
       if (qtyNode) qtyNode.textContent = totals.qty.toLocaleString("ko-KR") + "개";
       if (amountNode) amountNode.textContent = money(totals.amount);
     }
-    function excelCell(value) {
-      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    function csvCell(value) {
+      return '"' + String(value ?? "").replace(/"/g, '""') + '"';
     }
     function downloadDetailResults() {
       var rows = visibleDetailRows().map(detailRowValues);
@@ -822,16 +823,17 @@ SALES_PAGE = """<!DOCTYPE html>
       var totalQty = rows.reduce(function(sum, row) { return sum + row.qty; }, 0);
       var totalAmount = rows.reduce(function(sum, row) { return sum + row.amount; }, 0);
       var keyword = (document.getElementById("detail-keyword")?.value || "전체").trim() || "전체";
-      var tableRows = rows.map(function(row) {
-        return "<tr><td>" + [row.day, row.sku, row.name, row.qty, row.unitPrice, row.amount, row.po, row.memo].map(excelCell).join("</td><td>") + "</td></tr>";
-      }).join("");
-      var workbook = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:x='urn:schemas-microsoft-com:office:excel'><head><meta charset='UTF-8'></head><body>" +
-        "<table><tr><th>검색어</th><td>" + excelCell(keyword) + "</td></tr><tr><th>검색 결과</th><td>" + rows.length + "건</td><th>합계 수량</th><td>" + totalQty + "개</td><th>합계 금액</th><td>" + totalAmount + "원</td></tr></table><br>" +
-        "<table border='1'><thead><tr><th>납품일</th><th>SKU ID</th><th>상품명</th><th>납품수량</th><th>단가</th><th>금액</th><th>PO</th><th>메모</th></tr></thead><tbody>" + tableRows + "</tbody></table></body></html>";
-      var blob = new Blob(["\ufeff", workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
+      var csvRows = [
+        ["검색어", keyword, "검색 결과", rows.length + "건", "합계 수량", totalQty + "개", "합계 금액", totalAmount + "원"],
+        [],
+        ["납품일", "SKU ID", "상품명", "납품수량", "단가", "금액", "PO", "메모"]
+      ];
+      rows.forEach(function(row) { csvRows.push([row.day, row.sku, row.name, row.qty, row.unitPrice, row.amount, row.po, row.memo]); });
+      var csv = csvRows.map(function(row) { return row.map(csvCell).join(","); }).join("\\r\\n");
+      var blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
       var link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = "쿠팡PO_검색결과_" + new Date().toISOString().slice(0, 10) + ".xls";
+      link.download = "쿠팡PO_검색결과_" + new Date().toISOString().slice(0, 10) + ".csv";
       document.body.appendChild(link);
       link.click();
       var objectUrl = link.href;
@@ -2684,40 +2686,47 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
 
 
 def parse_simpleworks_excel(path: Path) -> dict[str, int]:
-    wb = load_workbook(path, data_only=True)
-    ws = wb.active
+    if path.suffix.lower() == ".xls":
+        book = xlrd.open_workbook(path)
+        sheet = book.sheet_by_index(0)
+        rows = [[sheet.cell_value(row, col) for col in range(sheet.ncols)] for row in range(sheet.nrows)]
+    else:
+        wb = load_workbook(path, data_only=True)
+        ws = wb.active
+        rows = [[ws.cell(row, col).value for col in range(1, ws.max_column + 1)] for row in range(1, ws.max_row + 1)]
     header_row = None
     product_col = None
     qty_col = None
-    for row in range(1, min(ws.max_row, 30) + 1):
-        for col in range(1, ws.max_column + 1):
-            text = norm_header(ws.cell(row, col).value)
+    for row_index, row_values in enumerate(rows[:30]):
+        for col_index, value in enumerate(row_values):
+            text = norm_header(value)
             if text in ["상품명", "상품"]:
-                header_row = row
-                product_col = col
+                header_row = row_index
+                product_col = col_index
             if text == "수량":
-                header_row = row if header_row is None else header_row
-                qty_col = col
-        if product_col and qty_col:
+                header_row = row_index if header_row is None else header_row
+                qty_col = col_index
+        if product_col is not None and qty_col is not None:
             break
 
     quantities: dict[str, int] = defaultdict(int)
-    start_row = (header_row + 1) if header_row else 1
-    for row in range(start_row, ws.max_row + 1):
-        values = [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
+    start_row = (header_row + 1) if header_row is not None else 0
+    for values in rows[start_row:]:
         if all(value in [None, ""] for value in values):
             continue
-        simple_no = extract_simple_no(values)
+        simple_no = extract_simple_no([values[product_col]] if product_col is not None else values)
         if not simple_no:
             continue
-        if qty_col:
-            qty = parse_int(ws.cell(row, qty_col).value)
+        if qty_col is not None and qty_col < len(values):
+            qty_match = re.search(r"-?[\d,]+(?:\.\d+)?", str(values[qty_col] or ""))
+            qty = int(float(qty_match.group(0).replace(",", ""))) if qty_match else 0
         else:
             qty = 0
             for value in reversed(values):
                 text = str(value or "").strip()
                 if re.search(r"\d+\s*개?$", text) or isinstance(value, (int, float)):
-                    qty = parse_int(text)
+                    qty_match = re.search(r"-?[\d,]+(?:\.\d+)?", text)
+                    qty = int(float(qty_match.group(0).replace(",", ""))) if qty_match else 0
                     break
         if qty > 0:
             quantities[simple_no] += qty
@@ -3618,8 +3627,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
             image_count = 0
             for item in excel_items:
                 name = safe_name(item.filename)
-                if not name.lower().endswith(".xlsx"):
-                    raise ValueError("심플웍스 엑셀은 .xlsx 파일로 올려주세요.")
+                if not name.lower().endswith((".xls", ".xlsx")):
+                    raise ValueError("심플웍스 엑셀은 .xls 또는 .xlsx 파일로 올려주세요.")
                 file_path = work_dir / name
                 file_path.write_bytes(item.file.read())
                 parsed_qty = parse_simpleworks_excel(file_path)
