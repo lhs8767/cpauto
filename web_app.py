@@ -2181,7 +2181,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     return saved_count, sum(item["amount"] for item in grouped.values())
 
 
-def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -2548,7 +2548,7 @@ def render_confirmation_cells(day: str, sales_amount: int, record: dict[str, obj
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     summary_rows, detail_rows = load_monthly_sales_summary(
-        limit_rows=300 if folder_mode else None,
+        limit_rows=None,
         aggregate_by_sku=not folder_mode,
     )
     confirmation_data = load_sales_confirmations()
