@@ -700,6 +700,10 @@ SALES_PAGE = """<!DOCTYPE html>
     .lookup-row label { display:flex; flex:0 1 200px; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
     .lookup-row input, .lookup-row select { width:100%; height:32px; border:1px solid #b9c6d8; border-radius:6px; padding:5px 8px; font:inherit; background:#fff; }
     .lookup-row .lookup-reset { flex:0 0 140px; height:32px; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:5px 9px; font-weight:800; cursor:pointer; }
+    .detail-result-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
+    .detail-result-summary { display:flex; align-items:center; gap:18px; flex-wrap:wrap; color:#1f4e79; font-size:13px; font-weight:800; }
+    .detail-result-summary strong { color:#0b3155; font-size:15px; }
+    .detail-download { border:0; border-radius:7px; padding:9px 14px; background:#1f5d8f; color:#fff; font-weight:900; cursor:pointer; }
     .inline-delete-form { flex:0 0 140px; align-self:end; margin:0; }
     .inline-delete-form .delete-btn { width:100%; height:32px; }
     .panel-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -773,6 +777,66 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function money(value) {
       return Math.round(value).toLocaleString("ko-KR") + "원";
+    }
+    function visibleDetailRows() {
+      return Array.from(document.querySelectorAll(".detail-row")).filter(function(row) {
+        return row.style.display !== "none" && !row.classList.contains("month-hidden");
+      });
+    }
+    function detailRowValues(row) {
+      var cells = row.children;
+      var qtyInput = row.querySelector(".qty-input");
+      var memoInput = row.querySelector(".memo-input");
+      return {
+        day: row.dataset.day || "",
+        sku: (cells[0]?.textContent || "").trim(),
+        name: (cells[1]?.textContent || "").trim(),
+        qty: qtyInput ? Number(qtyInput.value || "0") : parseMoney(cells[2]?.textContent || "0"),
+        unitPrice: parseMoney(cells[3]?.textContent || "0"),
+        amount: parseMoney(row.querySelector(".row-amount")?.textContent || "0"),
+        po: (row.querySelector(".po-cell")?.textContent || cells[5]?.textContent || "").trim(),
+        memo: memoInput ? memoInput.value.trim() : (cells[6]?.textContent || "").trim()
+      };
+    }
+    function updateDetailResultSummary() {
+      var rows = visibleDetailRows();
+      var totals = rows.reduce(function(result, row) {
+        var values = detailRowValues(row);
+        result.qty += values.qty;
+        result.amount += values.amount;
+        return result;
+      }, { qty: 0, amount: 0 });
+      var countNode = document.getElementById("detail-result-count");
+      var qtyNode = document.getElementById("detail-result-qty");
+      var amountNode = document.getElementById("detail-result-amount");
+      if (countNode) countNode.textContent = rows.length.toLocaleString("ko-KR") + "건";
+      if (qtyNode) qtyNode.textContent = totals.qty.toLocaleString("ko-KR") + "개";
+      if (amountNode) amountNode.textContent = money(totals.amount);
+    }
+    function excelCell(value) {
+      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function downloadDetailResults() {
+      var rows = visibleDetailRows().map(detailRowValues);
+      if (!rows.length) { alert("다운로드할 검색 결과가 없습니다."); return; }
+      var totalQty = rows.reduce(function(sum, row) { return sum + row.qty; }, 0);
+      var totalAmount = rows.reduce(function(sum, row) { return sum + row.amount; }, 0);
+      var keyword = (document.getElementById("detail-keyword")?.value || "전체").trim() || "전체";
+      var tableRows = rows.map(function(row) {
+        return "<tr><td>" + [row.day, row.sku, row.name, row.qty, row.unitPrice, row.amount, row.po, row.memo].map(excelCell).join("</td><td>") + "</td></tr>";
+      }).join("");
+      var workbook = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:x='urn:schemas-microsoft-com:office:excel'><head><meta charset='UTF-8'></head><body>" +
+        "<table><tr><th>검색어</th><td>" + excelCell(keyword) + "</td></tr><tr><th>검색 결과</th><td>" + rows.length + "건</td><th>합계 수량</th><td>" + totalQty + "개</td><th>합계 금액</th><td>" + totalAmount + "원</td></tr></table><br>" +
+        "<table border='1'><thead><tr><th>납품일</th><th>SKU ID</th><th>상품명</th><th>납품수량</th><th>단가</th><th>금액</th><th>PO</th><th>메모</th></tr></thead><tbody>" + tableRows + "</tbody></table></body></html>";
+      var blob = new Blob(["\ufeff", workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
+      var link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "쿠팡PO_검색결과_" + new Date().toISOString().slice(0, 10) + ".xls";
+      document.body.appendChild(link);
+      link.click();
+      var objectUrl = link.href;
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
     }
     function recalcSalesScreen() {
       var dayTotals = {};
@@ -923,6 +987,7 @@ SALES_PAGE = """<!DOCTYPE html>
       document.querySelectorAll(".month-folder").forEach(function(row) {
         row.style.display = visibleByMonth[row.dataset.month] ? "" : "none";
       });
+      updateDetailResultSummary();
       recalcYearScreen();
     }
     function resetLookup(group) {
@@ -1135,6 +1200,14 @@ SALES_PAGE = """<!DOCTYPE html>
               <input type="hidden" name="delete_month" value="{current_month}">
               <button class="delete-btn" type="submit">조회 월 삭제</button>
             </form>
+          </div>
+          <div class="detail-result-bar">
+            <div class="detail-result-summary">
+              <span>검색 결과 <strong id="detail-result-count">0건</strong></span>
+              <span>합계 수량 <strong id="detail-result-qty">0개</strong></span>
+              <span>합계 금액 <strong id="detail-result-amount">0원</strong></span>
+            </div>
+            <button class="detail-download" type="button" onclick="downloadDetailResults()">검색결과 엑셀 다운로드</button>
           </div>
           <form method="post" action="/sales/save" onsubmit="return prepareSalesSave(this)">
           <input type="hidden" name="override_reason" value="">
