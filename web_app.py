@@ -533,7 +533,7 @@ CHECK_PAGE = """<!DOCTYPE html>
     .sub { margin-top:7px; color:var(--muted); font-size:14px; }
     .cards { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; margin-top:22px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; }
-    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; }
+    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
     .panel-body { padding:18px; }
     .form-grid { display:grid; grid-template-columns:180px 180px minmax(260px,1fr) minmax(260px,1fr); gap:12px; align-items:end; }
     label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:#344054; font-weight:800; }
@@ -558,6 +558,39 @@ CHECK_PAGE = """<!DOCTYPE html>
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
+    function checkCsvCell(value) {
+      return '"' + String(value ?? "").replace(/"/g, '""') + '"';
+    }
+    function downloadCheckResults() {
+      var table = document.querySelector(".check-result-table");
+      if (!table) { alert("다운로드할 검수 결과가 없습니다."); return; }
+      var headers = Array.from(table.querySelectorAll("thead th")).map(function(cell) { return cell.textContent.trim(); });
+      var rows = Array.from(table.querySelectorAll("tbody tr")).map(function(row) {
+        return Array.from(row.querySelectorAll("td")).map(function(cell) { return cell.textContent.trim(); });
+      }).filter(function(row) { return row.length === headers.length; });
+      if (!rows.length) { alert("다운로드할 검수 결과가 없습니다."); return; }
+      var summary = Array.from(document.querySelectorAll(".check-result-summary > div")).map(function(card) {
+        return card.textContent.replace(/\\s+/g, " ").trim();
+      });
+      var dateFrom = document.querySelector('input[name="date_from"]')?.value || "";
+      var dateTo = document.querySelector('input[name="date_to"]')?.value || "";
+      var csvRows = [
+        ["검수기간", dateFrom + " ~ " + dateTo],
+        ["검수요약"].concat(summary),
+        [],
+        headers
+      ].concat(rows);
+      var csv = csvRows.map(function(row) { return row.map(checkCsvCell).join(","); }).join("\\r\\n");
+      var blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+      var link = document.createElement("a");
+      var objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = "수량검수_결과_" + (dateFrom || "시작일") + "_" + (dateTo || "종료일") + ".csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    }
   </script>
 </head>
 <body>
@@ -3097,10 +3130,10 @@ def render_check_result(
     if not rows:
         rows.append('<tr><td colspan="7">검수할 자료가 없습니다.</td></tr>')
     return (
-        '<section class="panel"><div class="panel-head">검수 결과</div><div class="panel-body">'
-        f'<div class="summary"><div>일치<b>{ok_count:,}</b></div><div>수량차이<b>{diff_count:,}</b></div>'
+        '<section class="panel"><div class="panel-head"><span>검수 결과</span><button class="btn" type="button" onclick="downloadCheckResults()">검수결과 엑셀 다운로드</button></div><div class="panel-body">'
+        f'<div class="summary check-result-summary"><div>일치<b>{ok_count:,}</b></div><div>수량차이<b>{diff_count:,}</b></div>'
         f'<div>쿠팡만 있음<b>{coupang_only + len(unmapped):,}</b></div><div>심플웍스만 있음<b>{simple_only:,}</b></div></div>'
-        '<div class="scroll" style="margin-top:14px;"><table><colgroup><col style="width:120px;"><col style="width:110px;"><col style="width:120px;"><col style="width:380px;"><col style="width:110px;"><col style="width:120px;"><col style="width:100px;"></colgroup>'
+        '<div class="scroll" style="margin-top:14px;"><table class="check-result-table"><colgroup><col style="width:120px;"><col style="width:110px;"><col style="width:120px;"><col style="width:380px;"><col style="width:110px;"><col style="width:120px;"><col style="width:100px;"></colgroup>'
         '<thead><tr><th>상태</th><th>심플웍스 No</th><th>SKU ID</th><th>상품명</th><th>쿠팡 수량</th><th>심플웍스 수량</th><th>차이</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table></div></div></section>"
     )
