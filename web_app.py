@@ -3,6 +3,7 @@ from __future__ import annotations
 import cgi
 import base64
 import html
+import io
 import json
 import mimetypes
 import os
@@ -20,15 +21,14 @@ from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-import xlrd
 from features.auth.pages import admin_page, login_page
 from features.auth.service import AuthManager
+from features.growth_incentive.service import calculate_year, load_config, save_config
 
 BASE_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = BASE_DIR / "scripts"
@@ -39,6 +39,9 @@ MONTHLY_SALES_PATH = DATA_DIR / "월매출_납품상품.xlsx"
 SALES_LEDGER_PATH = DATA_DIR / "_월매출_내부자료.xlsx"
 YEAR_MANUAL_PATH = DATA_DIR / "연도총매출_수기입력.json"
 SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
+GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
+TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
+TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -129,12 +132,12 @@ def backup_sales_files_to_supabase() -> None:
 def load_sales_confirmations() -> dict[str, object]:
     restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH)
     if not SALES_CONFIRM_PATH.exists():
-        return {"days": {}}
+        return {"months": {}}
     try:
         data = json.loads(SALES_CONFIRM_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {"days": {}}
+        return data if isinstance(data, dict) else {"months": {}}
     except (OSError, json.JSONDecodeError):
-        return {"days": {}}
+        return {"months": {}}
 
 
 def save_sales_confirmations(data: dict[str, object]) -> None:
@@ -143,10 +146,19 @@ def save_sales_confirmations(data: dict[str, object]) -> None:
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
 
 
-def sales_confirmation(day: str) -> dict[str, object]:
-    days = load_sales_confirmations().get("days", {})
-    value = days.get(day, {}) if isinstance(days, dict) else {}
+def sales_confirmation(month: str) -> dict[str, object]:
+    months = load_sales_confirmations().get("months", {})
+    value = months.get(month, {}) if isinstance(months, dict) else {}
     return value if isinstance(value, dict) else {}
+
+
+def append_sales_audit(month: str, event: dict[str, object]) -> None:
+    data = load_sales_confirmations()
+    months = data.setdefault("months", {})
+    record = months.setdefault(month, {})
+    history = record.setdefault("history", [])
+    history.append(event)
+    save_sales_confirmations(data)
 
 
 def restore_master_file_from_supabase() -> None:
@@ -534,7 +546,7 @@ CHECK_PAGE = """<!DOCTYPE html>
     .sub { margin-top:7px; color:var(--muted); font-size:14px; }
     .cards { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; margin-top:22px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; }
-    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; }
     .panel-body { padding:18px; }
     .form-grid { display:grid; grid-template-columns:180px 180px minmax(260px,1fr) minmax(260px,1fr); gap:12px; align-items:end; }
     label { display:flex; flex-direction:column; gap:6px; font-size:13px; color:#344054; font-weight:800; }
@@ -559,39 +571,6 @@ CHECK_PAGE = """<!DOCTYPE html>
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
-    function checkCsvCell(value) {
-      return '"' + String(value ?? "").replace(/"/g, '""') + '"';
-    }
-    function downloadCheckResults() {
-      var table = document.querySelector(".check-result-table");
-      if (!table) { alert("다운로드할 검수 결과가 없습니다."); return; }
-      var headers = Array.from(table.querySelectorAll("thead th")).map(function(cell) { return cell.textContent.trim(); });
-      var rows = Array.from(table.querySelectorAll("tbody tr")).map(function(row) {
-        return Array.from(row.querySelectorAll("td")).map(function(cell) { return cell.textContent.trim(); });
-      }).filter(function(row) { return row.length === headers.length; });
-      if (!rows.length) { alert("다운로드할 검수 결과가 없습니다."); return; }
-      var summary = Array.from(document.querySelectorAll(".check-result-summary > div")).map(function(card) {
-        return card.textContent.replace(/\\s+/g, " ").trim();
-      });
-      var dateFrom = document.querySelector('input[name="date_from"]')?.value || "";
-      var dateTo = document.querySelector('input[name="date_to"]')?.value || "";
-      var csvRows = [
-        ["검수기간", dateFrom + " ~ " + dateTo],
-        ["검수요약"].concat(summary),
-        [],
-        headers
-      ].concat(rows);
-      var csv = csvRows.map(function(row) { return row.map(checkCsvCell).join(","); }).join("\\r\\n");
-      var blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
-      var link = document.createElement("a");
-      var objectUrl = URL.createObjectURL(blob);
-      link.href = objectUrl;
-      link.download = "수량검수_결과_" + (dateFrom || "시작일") + "_" + (dateTo || "종료일") + ".csv";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
-    }
   </script>
 </head>
 <body>
@@ -624,7 +603,7 @@ CHECK_PAGE = """<!DOCTYPE html>
                   <input type="date" name="date_to" value="{date_to}">
                 </label>
                 <label>심플웍스 엑셀
-                  <input type="file" name="simpleworks_file" accept=".xls,.xlsx" multiple>
+                  <input type="file" name="simpleworks_file" accept=".xlsx" multiple>
                 </label>
                 <label>심플웍스 캡쳐 이미지
                   <input type="file" name="simpleworks_image" accept=".png,.jpg,.jpeg,.bmp,.webp" multiple>
@@ -632,7 +611,7 @@ CHECK_PAGE = """<!DOCTYPE html>
               </div>
               <div style="margin-top:14px;"><button class="btn" type="submit">수량 검수하기</button></div>
             </form>
-            <div class="note">심플웍스에서 다운로드한 원본 엑셀(.xls, .xlsx)을 수정하지 않고 바로 올릴 수 있습니다. `ㄴ`으로 이어진 구성품이 있으면 위 부모 번호는 제외하고 `ㄴ` 표시 번호만 검수하며, 하위 구성품이 없는 일반 상품은 기존처럼 검수합니다. 같은 번호의 수량은 자동 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
+            <div class="note">심플웍스 엑셀 또는 캡쳐 이미지를 여러 개 올릴 수 있습니다. 각 파일의 상품명 앞 노란 숫자를 `심플웍스 No`로 읽고, 같은 번호는 수량을 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
           </div>
         </section>
         {result}
@@ -678,42 +657,36 @@ SALES_PAGE = """<!DOCTYPE html>
     th { background:#f8fafc; color:#344054; }
     .summary-table th, .summary-table td { text-align:center; white-space:normal; }
     .summary-table th:first-child, .summary-table td:first-child { text-align:left; }
+    .summary-lookup { grid-template-columns:150px 150px 150px 130px; align-items:end; padding:10px 14px; gap:8px; background:linear-gradient(180deg,#fbfdff,#f6f9fc); }
+    .summary-lookup label { gap:4px; font-size:11px; color:#344054; }
+    .summary-lookup input { height:34px; padding:6px 9px; border-radius:7px; }
+    .summary-lookup .lookup-reset { height:34px; padding:6px 12px; border-radius:7px; }
+    .summary-months { display:grid; gap:12px; padding:14px; background:#f7fafc; }
+    .summary-month-section { border:1px solid #d8e4ef; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 6px 16px rgba(16,24,40,.05); }
+    .summary-month-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; background:#eef6f7; color:#173f68; border-bottom:1px solid #d8e4ef; }
+    .summary-month-title { font-size:14px; font-weight:900; letter-spacing:0; }
+    .summary-month-title small, .summary-month-metrics { display:none; }
+    .summary-month-toggle { border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:5px 9px; font-size:12px; font-weight:900; cursor:pointer; }
+    .summary-month-body { display:block; }
+    .summary-month-section.is-collapsed .summary-month-body { display:none; }
+    .summary-month-total { background:#fff2cc; font-weight:900; }
     .invoice-check { padding:12px; border-top:1px solid #d8e4ef; background:#fbfdff; }
-    .invoice-row { display:grid; grid-template-columns:120px 210px 150px minmax(420px,1fr); align-items:end; gap:12px; width:100%; }
-    .invoice-row strong { color:#173f68; padding-bottom:8px; }
-    .invoice-total-block { display:flex; flex-direction:column; gap:4px; color:#667085; font-size:12px; }
-    .invoice-total { font-size:15px; font-weight:900; color:#344054; }
-    .invoice-row > .status-badge { align-self:center; justify-self:start; }
-    .invoice-row .confirm-form { display:grid; grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) auto; gap:10px; width:100%; }
-    .invoice-detail { margin-top:8px; border:1px solid #d8e4ef; border-radius:7px; background:#fff; }
-    .invoice-detail > summary { cursor:pointer; padding:8px 10px; color:#1f4e79; font-weight:900; }
-    .invoice-detail-body { padding:0 10px 10px; }
-    .invoice-toolbar { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid #d8e4ef; background:#f8fafc; }
-    .invoice-check.completed-hidden { display:none; }
-    .summary-invoice-input { width:100%; min-width:110px; border:1px solid #b9c6d8; border-radius:5px; padding:6px 7px; font:inherit; text-align:right; }
-    .summary-invoice-number { text-align:left; }
-    .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-    .summary-invoice-actions .confirm-action { padding:6px 9px; font-size:12px; }
-    .summary-invoice-detail { width:100%; margin-top:4px; }
-    .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; font-size:12px; }
-    .summary-row.completed-hidden { display:none; }
-    @media (max-width:1100px) { .invoice-row { grid-template-columns:120px 190px 1fr; } .invoice-row .confirm-form { grid-column:1 / -1; } }
     .confirm-form { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
     .confirm-form label { display:flex; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
     .confirm-form .confirm-check { flex-direction:row; align-items:center; padding-bottom:7px; }
     .confirm-money { width:170px; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; text-align:right; }
     .confirm-action { border:0; border-radius:6px; padding:8px 11px; background:#1f4e79; color:#fff; font-weight:800; cursor:pointer; }
     .status-badge { display:inline-flex; align-items:center; border-radius:999px; padding:5px 9px; font-size:12px; font-weight:900; }
-    .status-ok { background:#dcfae6; color:#067647; } .status-warn { background:#fff2cc; color:#854a0e; } .status-bad { background:#fee4e2; color:#b42318; }
+    .status-ok { background:#dcfae6; color:#067647; }
+    .status-warn { background:#fff2cc; color:#854a0e; }
+    .status-bad { background:#fee4e2; color:#b42318; }
     .confirm-states { display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }
     .confirm-meta { margin-top:7px; color:#667085; font-size:12px; }
-    .history-details { margin-top:10px; font-size:12px; } .history-details summary { cursor:pointer; color:#1f4e79; font-weight:900; }
-    .history-scroll { margin-top:8px; overflow:auto; } .history-table { min-width:720px; } .history-table th, .history-table td { font-size:12px; text-align:left; }
-    .invoice-month { border-top:1px solid #d8e4ef; background:#fff; }
-    .invoice-month > summary { cursor:pointer; padding:12px 14px; background:#d7e8f7; color:#12385a; font-weight:900; list-style:none; }
-    .invoice-month > summary::-webkit-details-marker { display:none; }
-    .invoice-month > summary::after { content:"펼치기"; float:right; padding:3px 8px; border:1px solid #b9c6d8; border-radius:6px; background:#fff; color:#1f4e79; font-size:12px; }
-    .invoice-month[open] > summary::after { content:"숨기기"; }
+    .history-details { margin-top:10px; font-size:12px; }
+    .history-details summary { cursor:pointer; color:#1f4e79; font-weight:900; }
+    .history-scroll { margin-top:8px; overflow:auto; }
+    .history-table { min-width:720px; }
+    .history-table th, .history-table td { font-size:12px; text-align:left; }
     .detail-table th:nth-child(1), .detail-table td:nth-child(1),
     .detail-table th:nth-child(3), .detail-table td:nth-child(3),
     .detail-table th:nth-child(4), .detail-table td:nth-child(4),
@@ -726,33 +699,38 @@ SALES_PAGE = """<!DOCTYPE html>
     .memo-input { min-width:120px; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
     .save-row { display:flex; justify-content:flex-end; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
-    .year-table th { text-align:center; }
+    .year-table th { text-align:center; background:#f8fafc; color:#344054; font-weight:800; }
     .year-table td { text-align:right; }
     .year-table td:first-child { text-align:left; font-weight:700; }
+    .year-panel .lookup-row { grid-template-columns: minmax(160px, 220px) 160px; padding:10px 16px; }
+    .year-panel .scroll { border-top:1px solid var(--line); }
     .auto-cell { background:#f7fbff; font-weight:700; }
     .over-cell.negative { color:#c1121f; font-weight:800; }
-    .lookup-row { display:flex; align-items:flex-end; flex-wrap:wrap; gap:8px; padding:9px 14px; border-bottom:1px solid var(--line); background:#fbfcfe; }
-    .lookup-row label { display:flex; flex:0 1 200px; flex-direction:column; gap:4px; color:#475467; font-size:12px; font-weight:700; }
-    .lookup-row input, .lookup-row select { width:100%; height:32px; border:1px solid #b9c6d8; border-radius:6px; padding:5px 8px; font:inherit; background:#fff; }
-    .lookup-row .lookup-reset { flex:0 0 140px; height:32px; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:5px 9px; font-weight:800; cursor:pointer; }
+    .lookup-row { display:grid; grid-template-columns:repeat(5, minmax(120px, 1fr)); gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
+    .lookup-row label { display:flex; flex-direction:column; gap:5px; color:#475467; font-size:12px; font-weight:700; }
+    .lookup-row input, .lookup-row select { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:8px 9px; font:inherit; background:#fff; }
+    .lookup-row .lookup-reset { align-self:end; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; }
     .detail-result-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
     .detail-result-summary { display:flex; align-items:center; gap:18px; flex-wrap:wrap; color:#1f4e79; font-size:13px; font-weight:800; }
     .detail-result-summary strong { color:#0b3155; font-size:15px; }
     .detail-download { border:0; border-radius:7px; padding:9px 14px; background:#1f5d8f; color:#fff; font-weight:900; cursor:pointer; }
-    .inline-delete-form { flex:0 0 140px; align-self:end; margin:0; }
-    .inline-delete-form .delete-btn { width:100%; height:32px; }
+    .inline-delete-form { align-self:end; margin:0; }
+    .inline-delete-form .delete-btn { width:100%; }
     .panel-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .toggle-btn { border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; font-size:13px; }
     .delete-btn { border:1px solid #fecdca; background:#fff5f5; color:#b42318; border-radius:6px; padding:7px 9px; font-weight:800; cursor:pointer; font-size:12px; }
+    .mode-note { display:none; position:fixed; left:0; top:0; z-index:40; width:280px; max-width:calc(100vw - 24px); padding:10px 12px; border:1px solid #c7d7e8; border-radius:8px; background:#fff; color:#26384d; box-shadow:0 10px 28px rgba(16,24,40,.14); font-size:12px; line-height:1.5; }
+    .mode-note.is-visible { display:block; }
+    .mode-note strong { display:block; margin-bottom:3px; color:#1f4e79; font-size:13px; }
     .collapsible-content.is-hidden { display:none; }
     .not-shown { display:none; }
     .month-folder th { background:#d7e8f7; color:#12385a; cursor:pointer; font-weight:900; }
-    .month-hidden { display:none !important; }
+    .month-hidden, .view-hidden { display:none !important; }
     .resizable-table th { position:relative; }
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:2; }
     .col-resizer:hover, .col-resizer.active { background:rgba(31,78,121,.22); }
     .scroll { max-height:520px; overflow:auto; }
-    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row label{flex:1 1 180px;} }
+    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} }
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
@@ -815,7 +793,7 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function visibleDetailRows() {
       return Array.from(document.querySelectorAll(".detail-row")).filter(function(row) {
-        return row.style.display !== "none" && !row.classList.contains("month-hidden");
+        return row.style.display !== "none" && !row.classList.contains("view-hidden") && !row.classList.contains("month-hidden");
       });
     }
     function detailRowValues(row) {
@@ -829,7 +807,7 @@ SALES_PAGE = """<!DOCTYPE html>
         qty: qtyInput ? Number(qtyInput.value || "0") : parseMoney(cells[2]?.textContent || "0"),
         unitPrice: parseMoney(cells[3]?.textContent || "0"),
         amount: parseMoney(row.querySelector(".row-amount")?.textContent || "0"),
-        po: (row.querySelector(".po-cell")?.textContent || cells[5]?.textContent || "").trim(),
+        po: (row.querySelector(".po-cell")?.textContent || "").trim(),
         memo: memoInput ? memoInput.value.trim() : (cells[6]?.textContent || "").trim()
       };
     }
@@ -848,53 +826,95 @@ SALES_PAGE = """<!DOCTYPE html>
       if (qtyNode) qtyNode.textContent = totals.qty.toLocaleString("ko-KR") + "개";
       if (amountNode) amountNode.textContent = money(totals.amount);
     }
-    function csvCell(value) {
-      return '"' + String(value ?? "").replace(/"/g, '""') + '"';
+    function excelCell(value) {
+      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
     function downloadDetailResults() {
       var rows = visibleDetailRows().map(detailRowValues);
-      if (!rows.length) { alert("다운로드할 검색 결과가 없습니다."); return; }
+      if (!rows.length) {
+        alert("다운로드할 검색 결과가 없습니다.");
+        return;
+      }
       var totalQty = rows.reduce(function(sum, row) { return sum + row.qty; }, 0);
       var totalAmount = rows.reduce(function(sum, row) { return sum + row.amount; }, 0);
       var keyword = (document.getElementById("detail-keyword")?.value || "전체").trim() || "전체";
-      var csvRows = [
-        ["검색어", keyword, "검색 결과", rows.length + "건", "합계 수량", totalQty + "개", "합계 금액", totalAmount + "원"],
-        [],
-        ["납품일", "SKU ID", "상품명", "납품수량", "단가", "금액", "PO", "메모"]
-      ];
-      rows.forEach(function(row) { csvRows.push([row.day, row.sku, row.name, row.qty, row.unitPrice, row.amount, row.po, row.memo]); });
-      var csv = csvRows.map(function(row) { return row.map(csvCell).join(","); }).join("\\r\\n");
-      var blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+      var tableRows = rows.map(function(row) {
+        return "<tr><td>" + [row.day, row.sku, row.name, row.qty, row.unitPrice, row.amount, row.po, row.memo].map(excelCell).join("</td><td>") + "</td></tr>";
+      }).join("");
+      var workbook = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:x='urn:schemas-microsoft-com:office:excel'><head><meta charset='UTF-8'></head><body>" +
+        "<table><tr><th>검색어</th><td>" + excelCell(keyword) + "</td></tr><tr><th>검색 결과</th><td>" + rows.length + "건</td><th>합계 수량</th><td>" + totalQty + "개</td><th>합계 금액</th><td>" + totalAmount + "원</td></tr></table><br>" +
+        "<table border='1'><thead><tr><th>납품일</th><th>SKU ID</th><th>상품명</th><th>납품수량</th><th>단가</th><th>금액</th><th>PO</th><th>메모</th></tr></thead><tbody>" + tableRows + "</tbody></table></body></html>";
+      var blob = new Blob(["\ufeff", workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
       var link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = "쿠팡PO_검색결과_" + new Date().toISOString().slice(0, 10) + ".csv";
+      link.download = "쿠팡PO_검색결과_" + new Date().toISOString().slice(0, 10) + ".xls";
       document.body.appendChild(link);
       link.click();
-      var objectUrl = link.href;
       link.remove();
-      URL.revokeObjectURL(objectUrl);
+      URL.revokeObjectURL(link.href);
     }
     function recalcSalesScreen() {
       var dayTotals = {};
+      var monthTotals = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
         var day = row.dataset.day;
+        var month = row.dataset.month;
+        var viewMode = row.dataset.viewMode || "sku";
+        var key = day + "::" + viewMode;
         var originalQty = Number(row.dataset.originalQty || "0");
         var qtyInput = row.querySelector(".qty-input");
         var qty = qtyInput ? Number(qtyInput.value || "0") : Number((row.children[2]?.textContent || "0").replaceAll(",", ""));
         var unitPrice = Number(row.dataset.unitPrice || "0");
-        var amount = qty * unitPrice;
-        row.querySelector(".row-amount").textContent = money(amount);
+        var amountCell = row.querySelector(".row-amount");
+        var amount = qtyInput ? qty * unitPrice : parseMoney(amountCell ? amountCell.textContent : "0");
+        if (qtyInput && amountCell) amountCell.textContent = money(amount);
         var memoInput = row.querySelector(".memo-input");
         row.classList.toggle("changed", qty !== originalQty || !!(memoInput && memoInput.value.trim()));
         if (qtyInput) qtyInput.classList.toggle("changed", qty !== originalQty);
-        if (!dayTotals[day]) dayTotals[day] = { qty: 0, amount: 0 };
-        dayTotals[day].qty += qty;
-        dayTotals[day].amount += amount;
+        if (!dayTotals[key]) dayTotals[key] = { qty: 0, amount: 0, day: day, viewMode: viewMode };
+        dayTotals[key].qty += qty;
+        dayTotals[key].amount += amount;
+        if (viewMode === "sku") {
+          if (!monthTotals[month]) monthTotals[month] = 0;
+          monthTotals[month] += amount;
+        }
       });
-      Object.keys(dayTotals).forEach(function(day) {
-        document.querySelectorAll('[data-day-total="' + day + '"]').forEach(function(cell) {
-          cell.textContent = day + " 합계: 수량 " + dayTotals[day].qty.toLocaleString("ko-KR") + "개 / 금액 " + money(dayTotals[day].amount);
+      Object.keys(dayTotals).forEach(function(key) {
+        var total = dayTotals[key];
+        document.querySelectorAll('[data-day-total="' + total.day + '"][data-view-mode="' + total.viewMode + '"]').forEach(function(cell) {
+          cell.textContent = total.day + " 합계: 수량 " + total.qty.toLocaleString("ko-KR") + "개 / 금액 " + money(total.amount);
         });
+        if (total.viewMode !== "sku") return;
+        var summaryRow = document.querySelector('.summary-row[data-day="' + total.day + '"]');
+        if (summaryRow) {
+          var vat = Math.round(total.amount / 1.1);
+          var budget = Math.round(vat * 0.035);
+          summaryRow.querySelector(".summary-qty").textContent = total.qty.toLocaleString("ko-KR");
+          summaryRow.querySelector(".summary-amount").textContent = money(total.amount);
+          summaryRow.querySelector(".summary-vat").textContent = money(vat);
+          summaryRow.querySelector(".summary-budget").textContent = money(budget);
+        }
+      });
+      var year = new Date().getFullYear();
+      document.querySelectorAll(".summary-month-section").forEach(function(section) {
+        var month = section.dataset.month || "";
+        if (!month.startsWith(String(year) + "-")) return;
+        var monthAmount = 0;
+        section.querySelectorAll(".summary-row").forEach(function(row) {
+          monthAmount += parseMoney(row.querySelector(".summary-amount").textContent);
+        });
+        monthTotals[month] = monthAmount;
+      });
+      document.querySelectorAll(".year-row").forEach(function(row) {
+        var monthText = row.querySelector("td:first-child").textContent.replace("월", "").padStart(2, "0");
+        var key = year + "-" + monthText;
+        var monthAmount = monthTotals[key] || 0;
+        var vat = Math.round(monthAmount / 1.1);
+        var budget = Math.round(vat * 0.035);
+        row.dataset.sales = String(vat);
+        row.dataset.budget = String(budget);
+        row.querySelector(".year-sales").textContent = money(vat);
+        row.querySelector(".year-budget").textContent = money(budget);
       });
       recalcYearScreen();
       applyLookups();
@@ -909,19 +929,23 @@ SALES_PAGE = """<!DOCTYPE html>
       var totalDiscount = 0;
       var totalPartnerDiscount = 0;
       var totalExtraAd = 0;
+      var totalNet = 0;
       document.querySelectorAll(".year-row").forEach(function(row) {
         if (row.style.display === "none") return;
         var sales = Number(row.dataset.sales || "0");
         var budget = Number(row.dataset.budget || "0");
         var tester = parseMoney(row.querySelector(".tester-input").value);
         var ad = parseMoney(row.querySelector(".ad-input").value);
-        var support = parseMoney(row.querySelector(".support-input").value);
+        var support = Number(row.dataset.support || "0");
         var discount = parseMoney(row.querySelector(".discount-input").value);
         var partnerDiscount = parseMoney(row.querySelector(".partner-discount-input").value);
         var extraAd = parseMoney(row.querySelector(".extra-ad-input").value);
         var over = budget - tester - ad;
+        var net = sales - tester - ad - support - discount - partnerDiscount - extraAd;
         row.querySelector(".over-cell").textContent = money(over);
         row.querySelector(".over-cell").classList.toggle("negative", over < 0);
+        row.querySelector(".net-cell").textContent = money(net);
+        row.querySelector(".net-cell").classList.toggle("negative", net < 0);
         totalSales += sales;
         totalBudget += budget;
         totalTester += tester;
@@ -931,7 +955,7 @@ SALES_PAGE = """<!DOCTYPE html>
         totalDiscount += discount;
         totalPartnerDiscount += partnerDiscount;
         totalExtraAd += extraAd;
-        row.querySelector(".support-display").textContent = money(support);
+        totalNet += net;
         row.querySelector(".discount-display").textContent = money(discount);
         row.querySelector(".partner-discount-display").textContent = money(partnerDiscount);
         row.querySelector(".extra-ad-display").textContent = money(extraAd);
@@ -947,6 +971,7 @@ SALES_PAGE = """<!DOCTYPE html>
         totalRow.querySelector(".year-total-discount").textContent = money(totalDiscount);
         totalRow.querySelector(".year-total-partner-discount").textContent = money(totalPartnerDiscount);
         totalRow.querySelector(".year-total-extra-ad").textContent = money(totalExtraAd);
+        totalRow.querySelector(".year-total-net").textContent = money(totalNet);
       }
     }
     function inDateRange(day, from, to) {
@@ -960,73 +985,122 @@ SALES_PAGE = """<!DOCTYPE html>
         row.style.display = !yearMonth || row.dataset.month === yearMonth ? "" : "none";
       });
 
+      var summaryMonth = document.getElementById("summary-month")?.value || "";
       var summaryFrom = document.getElementById("summary-from")?.value || "";
       var summaryTo = document.getElementById("summary-to")?.value || "";
-      var visibleSummaryByMonth = {};
-      document.querySelectorAll(".summary-row").forEach(function(row) {
-        var show = inDateRange(row.dataset.day, summaryFrom, summaryTo);
-        row.style.display = show ? "" : "none";
-        if (show) {
-          var month = row.dataset.month || row.dataset.day.slice(0, 7);
-          if (!visibleSummaryByMonth[month]) visibleSummaryByMonth[month] = { po: 0, qty: 0, amount: 0 };
-          visibleSummaryByMonth[month].po += Number(row.dataset.poCount || "0");
-          visibleSummaryByMonth[month].qty += parseMoney(row.querySelector(".summary-qty").textContent);
-          visibleSummaryByMonth[month].amount += parseMoney(row.querySelector(".summary-amount").textContent);
-        }
-      });
-      document.querySelectorAll(".summary-total-row").forEach(function(summaryTotal) {
-        var visibleSummary = visibleSummaryByMonth[summaryTotal.dataset.month] || { po: 0, qty: 0, amount: 0 };
-        var vat = Math.round(visibleSummary.amount / 1.1);
+      document.querySelectorAll(".summary-month-section").forEach(function(section) {
+        var sectionMonth = section.dataset.month || "";
+        var monthSummary = { po: 0, qty: 0, amount: 0, rows: 0 };
+        section.querySelectorAll(".summary-row").forEach(function(row) {
+          var show = (!summaryMonth || sectionMonth === summaryMonth) && inDateRange(row.dataset.day, summaryFrom, summaryTo);
+          row.style.display = show ? "" : "none";
+          if (show) {
+            monthSummary.rows += 1;
+            monthSummary.po += Number(row.dataset.poCount || "0");
+            monthSummary.qty += parseMoney(row.querySelector(".summary-qty").textContent);
+            monthSummary.amount += parseMoney(row.querySelector(".summary-amount").textContent);
+          }
+        });
+        section.style.display = monthSummary.rows ? "" : "none";
+        var vat = Math.round(monthSummary.amount / 1.1);
         var budget = Math.round(vat * 0.035);
-        var totalPo = summaryTotal.querySelector(".summary-total-po");
-        var totalQty = summaryTotal.querySelector(".summary-total-qty");
-        var totalAmount = summaryTotal.querySelector(".summary-total-amount");
-        var totalVat = summaryTotal.querySelector(".summary-total-vat");
-        var totalBudget = summaryTotal.querySelector(".summary-total-budget");
-        if (totalPo) totalPo.textContent = visibleSummary.po.toLocaleString("ko-KR");
-        if (totalQty) totalQty.textContent = visibleSummary.qty.toLocaleString("ko-KR");
-        if (totalAmount) totalAmount.textContent = money(visibleSummary.amount);
-        if (totalVat) totalVat.textContent = money(vat);
-        if (totalBudget) totalBudget.textContent = money(budget);
+        section.querySelectorAll(".summary-month-po").forEach(function(node) { node.textContent = monthSummary.po.toLocaleString("ko-KR"); });
+        section.querySelectorAll(".summary-month-qty").forEach(function(node) { node.textContent = monthSummary.qty.toLocaleString("ko-KR"); });
+        section.querySelectorAll(".summary-month-amount").forEach(function(node) { node.textContent = money(monthSummary.amount); });
+        section.querySelectorAll(".summary-month-vat").forEach(function(node) { node.textContent = money(vat); });
+        section.querySelectorAll(".summary-month-budget").forEach(function(node) { node.textContent = money(budget); });
       });
 
       var detailFrom = document.getElementById("detail-from")?.value || "";
       var detailTo = document.getElementById("detail-to")?.value || "";
-      var detailKeyword = (document.getElementById("detail-keyword")?.value || "").trim().toLowerCase();
+      var detailKeywordNode = document.getElementById("detail-keyword");
+      var detailKeyword = (detailKeywordNode?.value || "").trim().toLowerCase();
+      var detailPoSelect = document.getElementById("detail-po-select");
+      var detailViewMode = document.getElementById("detail-view-mode")?.value || "sku";
+      function getRowPoList(row) {
+        var poText = row.dataset.poList || row.querySelector(".po-cell")?.dataset.originalPo || "";
+        return poText.split(",").map(function(po) { return po.trim(); }).filter(Boolean);
+      }
+      function cleanAttr(value) {
+        return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      function cleanText(value) {
+        return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+      var selectedPo = (detailPoSelect?.value || "").trim();
+      var availablePo = {};
+      document.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
+        if ((row.dataset.month || "") < "2026-07") return;
+        if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
+        getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
+      });
+      if (detailPoSelect) {
+        var previousPo = selectedPo;
+        var poOptions = Object.keys(availablePo).sort();
+        detailPoSelect.innerHTML = '<option value="">전체 PO</option>' + poOptions.map(function(po) {
+          return '<option value="' + cleanAttr(po) + '">' + cleanText(po) + '</option>';
+        }).join("");
+        detailPoSelect.value = poOptions.includes(previousPo) ? previousPo : "";
+        selectedPo = detailPoSelect.value;
+      }
+      var keywordLooksPo = /^\\d{6,}$/.test(detailKeyword);
+      var requestedPo = selectedPo || (keywordLooksPo ? detailKeyword : "");
+      if (selectedPo && detailKeywordNode && detailKeywordNode.value !== selectedPo) {
+        detailKeywordNode.value = selectedPo;
+        detailKeyword = selectedPo.toLowerCase();
+        keywordLooksPo = true;
+      }
       var visibleByDay = {};
       var visibleByMonth = {};
-      var visibleDetailTotals = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
         var haystack = (row.dataset.search || "").toLowerCase();
-        var show = inDateRange(row.dataset.day, detailFrom, detailTo) && (!detailKeyword || haystack.includes(detailKeyword));
+        var rowMode = row.dataset.viewMode || "sku";
+        var poList = getRowPoList(row);
+        var allowPoMonth = detailViewMode !== "po" || (row.dataset.month || "") >= "2026-07";
+        var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
+        var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
+        var show = rowMode === detailViewMode && allowPoMonth && poMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
+        var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
+        var poCell = row.querySelector(".po-cell");
+        if (poCell) poCell.textContent = displayPo || (poCell.dataset.originalPo || poCell.textContent);
+        row.classList.toggle("view-hidden", rowMode !== detailViewMode);
         row.style.display = show ? "" : "none";
         if (show) {
-          visibleByDay[row.dataset.day] = true;
-          visibleByMonth[row.dataset.month] = true;
+          var dayKey = row.dataset.day + "::" + rowMode;
           var qtyInput = row.querySelector(".qty-input");
-          var qty = qtyInput ? Number(qtyInput.value || "0") : parseMoney(row.children[2]?.textContent || "0");
-          var amount = qty * Number(row.dataset.unitPrice || "0");
-          if (!visibleDetailTotals[row.dataset.day]) visibleDetailTotals[row.dataset.day] = { qty: 0, amount: 0 };
-          visibleDetailTotals[row.dataset.day].qty += qty;
-          visibleDetailTotals[row.dataset.day].amount += amount;
+          var qty = qtyInput ? Number(qtyInput.value || "0") : Number((row.children[2]?.textContent || "0").replaceAll(",", ""));
+          var amount = parseMoney(row.querySelector(".row-amount")?.textContent || "0");
+          if (!visibleByDay[dayKey]) visibleByDay[dayKey] = { qty: 0, amount: 0 };
+          visibleByDay[dayKey].qty += qty;
+          visibleByDay[dayKey].amount += amount;
+          visibleByMonth[row.dataset.month + "::" + rowMode] = true;
         }
       });
       document.querySelectorAll(".detail-day-row").forEach(function(row) {
-        var visible = visibleByDay[row.dataset.day];
-        row.style.display = visible ? "" : "none";
-        var total = visibleDetailTotals[row.dataset.day];
-        var label = row.querySelector('[data-day-total="' + row.dataset.day + '"]');
-        if (visible && total && label) {
-          label.textContent = row.dataset.day + " 합계: 수량 " + total.qty.toLocaleString("ko-KR") + "개 / 금액 " + money(total.amount);
+        var rowMode = row.dataset.viewMode || "sku";
+        var dayKey = row.dataset.day + "::" + rowMode;
+        var total = visibleByDay[dayKey];
+        row.classList.toggle("view-hidden", rowMode !== detailViewMode);
+        row.style.display = total ? "" : "none";
+        var totalCell = row.querySelector("[data-day-total]");
+        if (totalCell && total) {
+          totalCell.textContent = row.dataset.day + " 합계: 수량 " + total.qty.toLocaleString("ko-KR") + "개 / 금액 " + money(total.amount);
         }
       });
       document.querySelectorAll(".month-folder").forEach(function(row) {
-        row.style.display = visibleByMonth[row.dataset.month] ? "" : "none";
+        var rowMode = row.dataset.viewMode || "sku";
+        row.classList.toggle("view-hidden", rowMode !== detailViewMode);
+        row.style.display = visibleByMonth[row.dataset.month + "::" + rowMode] ? "" : "none";
       });
       updateDetailResultSummary();
       recalcYearScreen();
     }
-    function resetLookup(group) {
+    function toggleSummaryMonth(button) {
+      var section = button.closest(".summary-month-section");
+      if (!section) return;
+      var collapsed = section.classList.toggle("is-collapsed");
+      button.textContent = collapsed ? "펼치기" : "숨기기";
+    }    function resetLookup(group) {
       document.querySelectorAll('[data-lookup-group="' + group + '"] input, [data-lookup-group="' + group + '"] select').forEach(function(input) {
         input.value = "";
       });
@@ -1072,8 +1146,10 @@ SALES_PAGE = """<!DOCTYPE html>
       button.textContent = hidden ? "펼치기" : "숨기기";
     }
     function toggleMonthFolder(month, button) {
-      var closed = button.closest(".month-folder").classList.toggle("is-closed");
-      document.querySelectorAll('[data-month="' + month + '"]').forEach(function(row) {
+      var folder = button.closest(".month-folder");
+      var viewMode = folder?.dataset.viewMode || "sku";
+      var closed = folder.classList.toggle("is-closed");
+      document.querySelectorAll('[data-month="' + month + '"][data-view-mode="' + viewMode + '"]').forEach(function(row) {
         if (!row.classList.contains("month-folder")) row.classList.toggle("month-hidden", closed);
       });
       button.textContent = closed ? "펼치기" : "숨기기";
@@ -1081,30 +1157,25 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function prepareSalesSave(form) {
       var changedConfirmedMonths = new Set();
-      form.querySelectorAll('.detail-row').forEach(function(row) {
-        var qty = row.querySelector('.qty-input'), memo = row.querySelector('.memo-input');
+      form.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
+        var qty = row.querySelector('.qty-input');
+        var memo = row.querySelector('.memo-input');
         var qtyChanged = qty && Number(qty.value || "0") !== Number(row.dataset.savedQty || row.dataset.originalQty || "0");
         var memoChanged = memo && memo.value.trim() !== String(row.dataset.savedMemo || "");
         if ((qtyChanged || memoChanged) && row.dataset.confirmed === "true") changedConfirmedMonths.add(row.dataset.month);
       });
       if (!changedConfirmedMonths.size) return true;
-      if (!confirm("계산서 발행 확인이 완료된 건입니다. 수정하면 확인 당시의 내용과 달라질 수 있습니다. 그래도 수정하시겠습니까?")) return false;
+      var warning = "계산서 발행 확인이 완료된 건입니다. 수정하면 확인 당시의 내용과 달라질 수 있습니다. 그래도 수정하시겠습니까?";
+      if (!confirm(warning)) return false;
       var reason = prompt("수정 사유를 입력해 주세요. 수정 사유가 없으면 저장할 수 없습니다.");
       if (!reason || !reason.trim()) { alert("수정 사유를 입력해야 합니다."); return false; }
       form.querySelector('input[name="override_reason"]').value = reason.trim();
       return true;
     }
-    function toggleCompletedInvoices(button) {
-      var hiding = button.dataset.hiding !== "true";
-      button.dataset.hiding = String(hiding);
-      document.querySelectorAll('.invoice-check.is-complete').forEach(function(panel) { panel.classList.toggle('completed-hidden', hiding); });
-      document.querySelectorAll('.summary-row.is-complete').forEach(function(row) { row.classList.toggle('completed-hidden', hiding); });
-      button.textContent = hiding ? "완료건 보이기" : "완료건 숨기기";
-    }
     document.addEventListener("DOMContentLoaded", function() {
       initResizableTables();
       document.querySelectorAll(".qty-input, .memo-input").forEach(function(input) {
-        input.addEventListener("input", recalcSalesScreen);
+        input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
       });
       document.querySelectorAll(".money-input").forEach(function(input) {
         input.addEventListener("input", recalcYearScreen);
@@ -1113,6 +1184,43 @@ SALES_PAGE = """<!DOCTYPE html>
         input.addEventListener("input", applyLookups);
         input.addEventListener("change", applyLookups);
       });
+      var detailPoSelect = document.getElementById("detail-po-select");
+      var detailKeywordInput = document.getElementById("detail-keyword");
+      if (detailPoSelect && detailKeywordInput) {
+        detailPoSelect.addEventListener("change", function() {
+          detailKeywordInput.value = detailPoSelect.value;
+          applyLookups();
+        });
+      }
+      var detailViewMode = document.getElementById("detail-view-mode");
+      if (detailViewMode) {
+        var modeNote = document.getElementById("mode-note");
+        var detailSaveRow = document.getElementById("detail-save-row");
+        var noteTimer;
+        function showModeNote() {
+          if (!modeNote) return;
+          var rect = detailViewMode.getBoundingClientRect();
+          modeNote.classList.add("is-visible");
+          var noteRect = modeNote.getBoundingClientRect();
+          var left = Math.min(Math.max(12, rect.left), window.innerWidth - noteRect.width - 12);
+          var top = rect.top - noteRect.height - 8;
+          if (top < 12) top = rect.bottom + 8;
+          modeNote.style.left = left + "px";
+          modeNote.style.top = top + "px";
+          window.clearTimeout(noteTimer);
+          noteTimer = window.setTimeout(function() { modeNote.classList.remove("is-visible"); }, 3000);
+        }
+        function syncDetailModeControls() {
+          if (detailSaveRow) detailSaveRow.style.display = detailViewMode.value === "po" ? "flex" : "none";
+        }
+        detailViewMode.addEventListener("click", showModeNote);
+        detailViewMode.addEventListener("focus", showModeNote);
+        detailViewMode.addEventListener("change", function() {
+          syncDetailModeControls();
+          showModeNote();
+        });
+        syncDetailModeControls();
+      }
       recalcSalesScreen();
       recalcYearScreen();
       applyLookups();
@@ -1141,7 +1249,7 @@ SALES_PAGE = """<!DOCTYPE html>
           <div class="panel-head">
             <span>연도총매출</span>
             <div class="panel-actions">
-              <span style="font-size:12px;color:#667085;">매출/VAT 별도/광고비예산은 월매출에서 자동 반영</span>
+              <span style="font-size:12px;color:#667085;">매출/VAT 별도/광고비예산/성장장려금은 월매출과 기초자료에서 자동 반영</span>
               <button class="toggle-btn" type="button" onclick="toggleSection('year-sales-content', this)">숨기기</button>
             </div>
           </div>
@@ -1173,12 +1281,27 @@ SALES_PAGE = """<!DOCTYPE html>
                 <col style="width:10%;">
                 <col style="width:10%;">
                 <col style="width:10%;">
+                <col style="width:12%;">
               </colgroup>
-              <thead><tr><th>월</th><th>매출<br>(VAT 미포함)</th><th>광고비예산<br>(VAT 미포함)</th><th>체험단<br>(VAT 미포함)</th><th>광고</th><th>광고비초과</th><th>성장장려금<br>(분기)</th><th>즉시할인<br>(VAT 미포함)</th><th>즉시할인<br>(다연채)</th><th>광고비</th></tr></thead>
+              <thead><tr><th>월</th><th>매출<br>(VAT 미포함)</th><th>광고비예산<br>(VAT 미포함)</th><th>체험단<br>(VAT 미포함)</th><th>광고</th><th>광고비초과</th><th>성장장려금<br>(자동)</th><th>즉시할인<br>(VAT 미포함)</th><th>즉시할인<br>(다연채)</th><th>광고비</th><th>차감 후 금액<br>(자동)</th></tr></thead>
               <tbody>{year_rows}</tbody>
             </table>
           </div>
           </form>
+          </div>
+        </section>
+        <section class="panel tester-panel {upload_section_class}">
+          <div class="panel-head">
+            <span>체험단 자료</span>
+            <span style="font-size:12px;color:#667085;">엑셀 원본 보관 · 월별 금액 자동 반영 · 수기 수정 가능</span>
+          </div>
+          <div class="panel-body">
+            <form method="post" action="/sales/tester/upload" enctype="multipart/form-data">
+              <input type="file" name="tester_files" accept=".xlsx" multiple required>
+              <button class="btn" type="submit">체험단 엑셀 올리기</button>
+            </form>
+            <div style="margin-top:9px;color:#667085;font-size:12px;">파일명에서 연·월을 확인하고 ‘총 진행 금액’을 체험단 비용에 자동 반영합니다. 자동 반영 후 위 연도총매출 표에서 금액을 수기로 고쳐 저장할 수도 있습니다.</div>
+            <div style="margin-top:14px;">{tester_files}</div>
           </div>
         </section>
         <section class="panel upload-panel {upload_section_class}">
@@ -1191,6 +1314,9 @@ SALES_PAGE = """<!DOCTYPE html>
             <div style="margin-top:10px;color:#667085;font-size:13px;line-height:1.6;">
               심플웍스 등록 전후로 직접 수정한 최종 PO 복사본을 여기에 올리면, 스큐 아이디 기준으로 월별 납품 내역과 매출에 누적됩니다.
             </div>
+            <div style="margin-top:8px;color:#667085;font-size:12px;line-height:1.5;">
+              기존에 여러 PO가 한 줄로 묶인 자료는 해당 PO 원본 파일들을 한 번에 다시 올리면 PO별 상세로 교체됩니다.
+            </div>
           </div>
         </section>
         <section class="panel summary-panel {summary_section_class}">
@@ -1202,7 +1328,10 @@ SALES_PAGE = """<!DOCTYPE html>
             </div>
           </div>
           <div id="monthly-summary-content" class="collapsible-content">
-          <div class="lookup-row" data-lookup-group="summary">
+          <div class="lookup-row summary-lookup" data-lookup-group="summary">
+            <label>조회월
+              <input id="summary-month" type="month">
+            </label>
             <label>시작일
               <input id="summary-from" type="date">
             </label>
@@ -1211,8 +1340,7 @@ SALES_PAGE = """<!DOCTYPE html>
             </label>
             <button class="lookup-reset" type="button" onclick="resetLookup('summary')">조회 초기화</button>
           </div>
-          <div class="summary-month-groups">{summary_rows}</div>
-          {confirmation_panels}
+          <div class="summary-months">{summary_rows}</div>
           </div>
         </section>
         <section class="panel detail-panel">
@@ -1223,6 +1351,17 @@ SALES_PAGE = """<!DOCTYPE html>
             </label>
             <label>종료일
               <input id="detail-to" type="date">
+            </label>
+            <label>보기방식
+              <select id="detail-view-mode">
+                <option value="sku">SKU 합계</option>
+                <option value="po">PO별 상세(2026년 7월부터)</option>
+              </select>
+            </label>
+            <label>PO 선택
+              <select id="detail-po-select">
+                <option value="">전체 PO</option>
+              </select>
             </label>
             <label>스큐/상품명/PO/메모
               <input id="detail-keyword" type="search" placeholder="찾을 내용 입력">
@@ -1247,7 +1386,7 @@ SALES_PAGE = """<!DOCTYPE html>
           </div>
           <form method="post" action="/sales/save" onsubmit="return prepareSalesSave(this)">
           <input type="hidden" name="override_reason" value="">
-          <div class="save-row"><button class="btn" type="submit">수량/메모 저장</button></div>
+          <div id="detail-save-row" class="save-row"><button class="btn" type="submit">수량/메모 저장</button></div><div id="mode-note" class="mode-note"><strong>보기방식 안내</strong>SKU 합계는 확인용이며, 저장/수정/삭제는 PO별 상세에서만 가능합니다.</div>
           <div class="scroll">
             <table class="detail-table resizable-table">
               <colgroup>
@@ -1529,6 +1668,18 @@ MASTER_PAGE = """<!DOCTYPE html>
               <button class="btn secondary" type="submit">현재 기초자료 교체</button>
             </div>
           </div>
+        </form>
+      </section>
+      <section class="panel">
+        <form method="post" action="/master/growth-incentive/save">
+          <div class="toolbar">
+            <div>
+              <strong style="font-size:17px;">성장장려금 기초자료</strong>
+              <div style="margin-top:6px;color:#667085;font-size:13px;">계약서의 월별 기본계약과 분기 타입B 구간입니다. 저장 후 연도총매출에 자동 반영됩니다.</div>
+            </div>
+            <div class="toolbar-actions"><button class="btn" type="submit">성장장려금 기초자료 저장</button></div>
+          </div>
+          {incentive_tables}
         </form>
       </section>
       <form method="post" action="/master/save">
@@ -2079,6 +2230,26 @@ def describe_sales_date_breakdown(lines) -> str:
     return " 입고예정일 기준으로 " + " / ".join(parts) + "으로 나누어 등록했습니다."
 
 
+
+def split_po_numbers(value: object) -> list[str]:
+    parts = []
+    for part in str(value or "").replace("PO:", "").split(","):
+        po_no = part.strip()
+        if po_no and po_no not in parts:
+            parts.append(po_no)
+    return parts
+
+
+def find_uploaded_sales_po_files() -> list[Path]:
+    if not RUNS_DIR.exists():
+        return []
+    files = []
+    for path in RUNS_DIR.glob("sales_*/uploaded_po/*.xlsx"):
+        if path.name.startswith("~$"):
+            continue
+        files.append(path)
+    return sorted(files, key=lambda p: (p.stat().st_mtime, str(p)))
+
 def ensure_monthly_sales_book():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     restore_sales_files_from_supabase()
@@ -2104,18 +2275,26 @@ def ensure_monthly_sales_book():
 
 def update_monthly_sales(lines) -> tuple[int, int]:
     wb, ws = ensure_monthly_sales_book()
-    po_numbers = {line.po_no for line in lines}
+    po_numbers = {po for line in lines for po in split_po_numbers(getattr(line, "po_no", ""))}
     prefer_inbound = has_inbound_sales_data(lines)
     master_amounts = get_master_amounts_by_sku()
 
+    existing_adjustments = {}
     rows_to_keep = []
     for row in range(2, ws.max_row + 1):
+        day = str(ws.cell(row, 1).value or "").strip()
+        sku = str(ws.cell(row, 4).value or "").strip()
         remarks = str(ws.cell(row, 9).value or "")
-        existing_po_numbers = {
-            part.strip()
-            for part in remarks.replace("PO:", "").split(",")
-            if part.strip()
-        }
+        row_po_no = str(ws.cell(row, 12).value or "")
+        existing_po_numbers = set(split_po_numbers(row_po_no) or split_po_numbers(remarks))
+        if existing_po_numbers & po_numbers and not existing_po_numbers <= po_numbers:
+            needed = ", ".join(sorted(existing_po_numbers))
+            raise ValueError(f"기존 자료에 PO {needed}가 한 줄로 묶여 있습니다. 정확히 재정리하려면 이 PO 원본 파일들을 한 번에 같이 올려주세요.")
+        adjusted_qty = str(ws.cell(row, 10).value or "").strip()
+        adjusted_memo = str(ws.cell(row, 11).value or "").strip()
+        for existing_po in existing_po_numbers:
+            if adjusted_qty or adjusted_memo:
+                existing_adjustments[(day, existing_po, sku)] = (adjusted_qty, adjusted_memo)
         if not (existing_po_numbers & po_numbers):
             rows_to_keep.append([ws.cell(row, col).value for col in range(1, 13)])
 
@@ -2132,7 +2311,6 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         "qty": 0,
         "amount": 0,
         "barcode": "",
-        "po_numbers": set(),
     })
     for line in lines:
         sku = str(line.sku_id or "").strip()
@@ -2142,21 +2320,21 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         if sales_qty <= 0 and sales_amount <= 0:
             continue
         day = parse_date(line.inbound_date)
-        po_no = str(line.po_no or "").strip()
-        key = (day, po_no, sku)
-        item = grouped[key]
-        item["month"] = parse_month(line.inbound_date)
-        item["inbound_date"] = line.inbound_date
-        item["po_no"] = po_no
-        item["sku"] = sku
-        item["name"] = item["name"] or line.product_name
-        item["qty"] += sales_qty
-        item["amount"] += sales_amount
-        item["barcode"] = item["barcode"] or line.barcode
-        item["po_numbers"].add(line.po_no)
+        for po_no in split_po_numbers(getattr(line, "po_no", "")):
+            key = (day, po_no, sku)
+            item = grouped[key]
+            item["month"] = parse_month(line.inbound_date)
+            item["inbound_date"] = line.inbound_date
+            item["po_no"] = po_no
+            item["sku"] = sku
+            item["name"] = item["name"] or line.product_name
+            item["qty"] += sales_qty
+            item["amount"] += sales_amount
+            item["barcode"] = item["barcode"] or line.barcode
 
     saved_count = 0
     for (_day, _po_no, _sku), item in sorted(grouped.items()):
+        adjusted_qty, adjusted_memo = existing_adjustments.get((_day, _po_no, _sku), ("", ""))
         ws.append([
             _day,
             item["month"],
@@ -2167,8 +2345,8 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             item["amount"],
             item["barcode"],
             item["po_no"],
-            "",
-            "",
+            adjusted_qty,
+            adjusted_memo,
             item["po_no"],
         ])
         saved_count += 1
@@ -2182,7 +2360,28 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     return saved_count, sum(item["amount"] for item in grouped.values())
 
 
-def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def rebuild_monthly_sales_from_uploaded_pos() -> tuple[int, int, int]:
+    latest_by_po: dict[str, tuple[Path, list[object]]] = {}
+    for po_path in find_uploaded_sales_po_files():
+        try:
+            lines = read_po_lines(po_path)
+        except Exception as exc:
+            print(f"[sales] skipped uploaded PO {po_path}: {exc}", flush=True)
+            continue
+        po_keys = sorted({po for line in lines for po in split_po_numbers(getattr(line, "po_no", ""))})
+        for po_no in po_keys:
+            latest_by_po[po_no] = (po_path, [line for line in lines if po_no in split_po_numbers(getattr(line, "po_no", ""))])
+    if not latest_by_po:
+        raise ValueError("재정리할 업로드 PO 원본 파일을 찾지 못했습니다.")
+    all_lines = []
+    used_files = set()
+    for _po_no, (po_path, lines) in sorted(latest_by_po.items()):
+        all_lines.extend(lines)
+        used_files.add(po_path)
+    saved_count, total_amount = update_monthly_sales(all_lines)
+    return len(latest_by_po), saved_count, total_amount
+
+def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -2198,9 +2397,7 @@ def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: 
         original_qty = parse_int(ws.cell(row, 6).value)
         original_amount = parse_int(ws.cell(row, 7).value)
         remarks = str(ws.cell(row, 9).value or "")
-        row_po_no = str(ws.cell(row, 12).value or "").strip() or ", ".join(
-            part.strip() for part in remarks.replace("PO:", "").split(",") if part.strip()
-        )
+        row_po_no = str(ws.cell(row, 12).value or "").strip() or ", ".join(split_po_numbers(remarks))
         adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
@@ -2212,11 +2409,9 @@ def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: 
             continue
         summary[day]["qty"] += adjusted_qty
         summary[day]["amount"] += amount
-        for part in (row_po_no or remarks).replace("PO:", "").split(","):
-            part = part.strip()
-            if part:
-                summary[day]["pos"].add(part)
-                clean_po_numbers.append(part)
+        for part in split_po_numbers(row_po_no or remarks):
+            summary[day]["pos"].add(part)
+            clean_po_numbers.append(part)
         rows.append([
             row,
             day,
@@ -2251,10 +2446,8 @@ def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: 
             item["qty"] += qty
             item["amount"] += amount
             item["changed"] = bool(item["changed"] or changed)
-            for po_no in str(remarks).split(","):
-                po_no = po_no.strip()
-                if po_no:
-                    item["remarks"].add(po_no)
+            for po_no in split_po_numbers(remarks):
+                item["remarks"].add(po_no)
             if memo:
                 item["memo"].append(str(memo))
         rows = [
@@ -2282,19 +2475,211 @@ def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: 
     return summary_rows, rows[-limit_rows:]
 
 
+def render_growth_incentive_tables() -> str:
+    config = load_config(GROWTH_INCENTIVE_PATH)
+
+    def period_table(key: str, period: dict, visible: bool) -> str:
+        period_no = int(period["period"])
+        cards = []
+        for band in period["bands"]:
+            number = int(band["band"])
+            upper = "" if band.get("upper") is None else f'{int(band["upper"]):,}'
+            rate = f'{float(band["rate"]) * 100:g}'
+            level = "low" if number <= 3 else ("mid" if number <= 6 else "high")
+            cards.append(
+                f'<div class="growth-tier-card {level}">'
+                f'<div class="growth-tier-head"><span class="growth-tier-badge">{number}등급</span>'
+                f'<label class="growth-rate"><input name="{key}_{period_no}_rate_{number}" type="number" min="0" max="100" step="0.1" value="{rate}" required><b>%</b></label></div>'
+                '<div class="growth-range">'
+                f'<label><span>초과</span><input class="growth-money" name="{key}_{period_no}_lower_{number}" inputmode="numeric" value="{int(band["lower"]):,}" required><b>원</b></label>'
+                '<div class="growth-range-arrow">↓</div>'
+                f'<label><span>이하</span><input class="growth-money" name="{key}_{period_no}_upper_{number}" inputmode="numeric" value="{upper}" placeholder="상한 없음"><b>원</b></label>'
+                '</div></div>'
+            )
+        display = "block" if visible else "none"
+        return (
+            f'<div class="growth-period" data-growth-group="{key}" data-growth-period="{period_no}" style="display:{display};">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;gap:12px;">'
+            f'<h3 style="margin:0;color:#17365d;">{html.escape(period["label"])} · 9등급</h3>'
+            f'<span style="color:#667085;font-size:13px;">산정기간 {html.escape(period["start"])} ~ {html.escape(period["end"])}</span></div>'
+            f'<div class="growth-tier-grid">{"".join(cards)}</div></div>'
+        )
+
+    def group_html(key: str, title: str, description: str) -> str:
+        buttons = "".join(
+            f'<button class="growth-period-btn{" active" if index == 0 else ""}" type="button" data-growth-button="{key}-{int(period["period"])}" onclick="showGrowthPeriod(\'{key}\',{int(period["period"])},this)">{html.escape(period["label"])}</button>'
+            for index, period in enumerate(config[key])
+        )
+        tables = "".join(period_table(key, period, index == 0) for index, period in enumerate(config[key]))
+        opened = " open" if key == "monthly" else ""
+        toggle_text = "숨기기" if key == "monthly" else "펼치기"
+        return (
+            f'<details class="growth-group"{opened} style="border:1px solid #d9e1ee;border-radius:12px;background:#fff;margin-bottom:16px;overflow:hidden;">'
+            f'<summary style="cursor:pointer;padding:14px 18px;background:#eaf2fb;font-size:17px;font-weight:800;color:#17365d;display:flex;align-items:center;justify-content:space-between;list-style:none;">'
+            f'<span>{html.escape(title)}</span><span class="growth-toggle-text">{toggle_text}</span></summary>'
+            f'<div style="padding:14px 18px 18px;"><div style="color:#667085;font-size:13px;margin-bottom:12px;">{html.escape(description)}</div>'
+            f'<div class="growth-period-buttons">{buttons}</div>{tables}</div></details>'
+        )
+
+    return (
+        '<style>'
+        '.growth-group summary::-webkit-details-marker{display:none}.growth-toggle-text{font-size:12px;color:#1f4e79;background:#fff;border:1px solid #b9c9dc;border-radius:7px;padding:6px 10px;min-width:44px;text-align:center}'
+        '.growth-period-buttons{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px}'
+        '[data-growth-group="quarterly"]~*{}'
+        '.growth-period-btn{flex:0 0 58px;border:1px solid #c7d3e3;background:#f8fafc;color:#29455f;border-radius:8px;padding:7px 5px;font-size:12px;font-weight:800;cursor:pointer;transition:.15s}'
+        '.growth-period-btn:hover{background:#eaf2fb}.growth-period-btn.active{background:#1f4e79;color:#fff;border-color:#1f4e79;box-shadow:0 3px 9px rgba(31,78,121,.18)}'
+        '.growth-tier-grid{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:12px;max-width:1180px}'
+        '.growth-tier-card{border:1px solid #d9e1ee;border-radius:12px;padding:13px 14px;background:#fbfcfe;box-shadow:0 2px 7px rgba(24,50,75,.05)}'
+        '.growth-tier-card.low{border-top:4px solid #7ba7d1}.growth-tier-card.mid{border-top:4px solid #77b697}.growth-tier-card.high{border-top:4px solid #d8ad5d}'
+        '.growth-tier-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}'
+        '.growth-tier-badge{font-weight:900;color:#17365d;font-size:15px}.growth-rate{display:flex;align-items:center;background:#edf4fb;color:#315b7d;border:1px solid #c8d9e9;border-radius:8px;padding:3px 8px}'
+        '.growth-rate input{width:48px!important;border:0!important;background:transparent!important;color:#315b7d!important;text-align:right!important;font-weight:900;font-size:16px;padding:3px!important}.growth-rate b{font-size:13px;color:#5d7790}'
+        '.growth-range{display:grid;gap:5px}.growth-range label{display:grid;grid-template-columns:34px 1fr 18px;align-items:center;gap:5px;color:#667085;font-size:12px}'
+        '.growth-range input{width:100%;box-sizing:border-box;border:1px solid #d7e0ea;border-radius:7px;background:#fff;padding:7px 8px;text-align:right;font-weight:700;color:#25364a}'
+        '.growth-range label b{font-weight:600;color:#667085}.growth-range-arrow{text-align:center;color:#9aa9b8;height:8px;line-height:8px;font-size:12px}'
+        '@media(max-width:1100px){.growth-tier-grid{grid-template-columns:repeat(2,minmax(250px,1fr))}}'
+        '@media(max-width:760px){.growth-period-btn{flex-basis:52px}.growth-tier-grid{grid-template-columns:1fr}}'
+        '</style>'
+        '<script>function showGrowthPeriod(group,period,button){document.querySelectorAll(\'[data-growth-group="\'+group+\'"]\').forEach(function(el){el.style.display=el.dataset.growthPeriod==String(period)?"block":"none"});document.querySelectorAll(\'[data-growth-button^="\'+group+\'-"]\').forEach(function(el){el.classList.remove("active")});button.classList.add("active")}function formatGrowthMoney(input){var digits=String(input.value||"").replace(/[^0-9]/g,"");input.value=digits?Number(digits).toLocaleString("ko-KR"):""}window.addEventListener("load",function(){document.querySelectorAll(".growth-money").forEach(function(input){input.addEventListener("input",function(){formatGrowthMoney(input)})});document.querySelectorAll(".growth-group").forEach(function(group){group.addEventListener("toggle",function(){var text=group.querySelector(".growth-toggle-text");if(text)text.textContent=group.open?"숨기기":"펼치기"})})});</script>'
+        '<div style="padding:4px 18px 8px;">'
+        + group_html("monthly", "표준 성장장려금 · 월별", "1월부터 12월까지 각 월별로 9등급을 관리합니다.")
+        + group_html("quarterly", "타입B 성장장려금 · 분기별", "1분기부터 4분기까지 각 분기별로 9등급을 관리합니다.")
+        + '</div><div style="padding:0 18px 18px;color:#667085;font-size:12px;">금액은 VAT 제외 기준입니다. 마지막 9등급의 종료 금액은 비워두세요.</div>'
+    )
+
+
+def save_growth_incentive_form(form: cgi.FieldStorage) -> None:
+    current = load_config(GROWTH_INCENTIVE_PATH)
+    groups = {"monthly": [], "quarterly": []}
+    for key, count in (("monthly", 12), ("quarterly", 4)):
+        for period_no in range(1, count + 1):
+            bands = []
+            for number in range(1, 10):
+                prefix = f"{key}_{period_no}"
+                lower_text = form[f"{prefix}_lower_{number}"].value.strip().replace(",", "")
+                upper_text = form[f"{prefix}_upper_{number}"].value.strip().replace(",", "")
+                rate_text = form[f"{prefix}_rate_{number}"].value.strip()
+                bands.append({"band": number, "lower": int(lower_text), "upper": int(upper_text) if upper_text else None, "rate": float(rate_text) / 100})
+            period = dict(current[key][period_no - 1])
+            period["bands"] = bands
+            groups[key].append(period)
+    save_config(GROWTH_INCENTIVE_PATH, groups["monthly"], groups["quarterly"])
+
+
 def sales_extra_amounts(amount: int) -> tuple[int, int]:
     vat_excluded = round(amount / 1.1)
     ad_budget = round(vat_excluded * 0.035)
     return vat_excluded, ad_budget
 
 
+def load_tester_files_meta() -> list[dict[str, object]]:
+    restore_file_from_supabase("tester_files_metadata", TESTER_FILES_META_PATH)
+    if not TESTER_FILES_META_PATH.exists():
+        return []
+    try:
+        value = json.loads(TESTER_FILES_META_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_tester_files_meta(items: list[dict[str, object]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    TESTER_FILES_META_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("tester_files_metadata", TESTER_FILES_META_PATH)
+
+
+def parse_tester_month(filename: str) -> str:
+    match = re.search(r"(20\d{2})[^0-9]{0,2}(\d{1,2})월", filename)
+    if not match:
+        raise ValueError(f"파일명에서 연·월을 찾지 못했습니다: {filename}")
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        raise ValueError(f"파일명의 월을 확인해주세요: {filename}")
+    return f"{year}-{month:02d}"
+
+
+def parse_tester_workbook(file_bytes: bytes, filename: str) -> tuple[str, int]:
+    month = parse_tester_month(filename)
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    try:
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for index, cell in enumerate(row):
+                    if norm_header(cell.value) != "총진행금액":
+                        continue
+                    for next_cell in row[index + 1:index + 4]:
+                        amount = parse_int(next_cell.value)
+                        if amount > 0:
+                            return month, amount
+    finally:
+        wb.close()
+    raise ValueError(f"'{filename}'에서 총 진행 금액을 찾지 못했습니다.")
+
+
+def save_uploaded_tester_files(items: list[tuple[str, bytes]]) -> tuple[int, list[str]]:
+    metadata = load_tester_files_meta()
+    affected_months: set[str] = set()
+    TESTER_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    for filename, file_bytes in items:
+        month, amount = parse_tester_workbook(file_bytes, filename)
+        file_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{month}:{filename}").hex[:16]
+        stored_name = f"{file_id}_{safe_name(filename)}"
+        stored_path = TESTER_FILES_DIR / stored_name
+        stored_path.write_bytes(file_bytes)
+        file_key = f"tester_file_{file_id}"
+        backup_file_to_supabase(file_key, stored_path)
+        metadata = [item for item in metadata if str(item.get("id")) != file_id]
+        metadata.append({
+            "id": file_id,
+            "name": safe_name(filename),
+            "stored_name": stored_name,
+            "file_key": file_key,
+            "month": month,
+            "amount": amount,
+            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        affected_months.add(month)
+    metadata.sort(key=lambda item: (str(item.get("month", "")), str(item.get("name", ""))))
+    save_tester_files_meta(metadata)
+    manual = load_year_manual()
+    for month in affected_months:
+        manual.setdefault(month, {})["tester"] = str(sum(int(item.get("amount", 0)) for item in metadata if item.get("month") == month))
+    save_year_manual_data(manual)
+    return len(items), sorted(affected_months)
+
+
+def render_tester_files() -> str:
+    items = load_tester_files_meta()
+    if not items:
+        return '<div style="color:#667085;font-size:13px;">저장된 체험단 원본 파일이 없습니다.</div>'
+    rows = []
+    for item in sorted(items, key=lambda value: (str(value.get("month", "")), str(value.get("name", ""))), reverse=True):
+        file_id = urllib.parse.quote(str(item.get("id", "")))
+        rows.append(
+            '<div style="display:grid;grid-template-columns:90px 1fr 150px 90px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
+            f'<strong>{html.escape(str(item.get("month", "")))}</strong>'
+            f'<span>{html.escape(str(item.get("name", "")))}</span>'
+            f'<span style="text-align:right;font-weight:800;">{int(item.get("amount", 0)):,}원</span>'
+            f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a></div>'
+        )
+    return '<div style="border:1px solid #e0e6ef;border-radius:9px;overflow:hidden;">' + "".join(rows) + "</div>"
+
+
 def load_year_manual() -> dict:
+    restore_file_from_supabase("year_manual", YEAR_MANUAL_PATH)
     if not YEAR_MANUAL_PATH.exists():
         return {}
     try:
         return json.loads(YEAR_MANUAL_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def save_year_manual_data(manual: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    YEAR_MANUAL_PATH.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("year_manual", YEAR_MANUAL_PATH)
 
 
 def save_year_manual(form: cgi.FieldStorage) -> int:
@@ -2305,14 +2690,14 @@ def save_year_manual(form: cgi.FieldStorage) -> int:
         key = f"{datetime.now().year}-{month:02d}"
         if key not in manual:
             manual[key] = {}
-        for field in ("tester", "ad", "support", "discount", "partner_discount", "extra_ad"):
+        for field in ("tester", "ad", "discount", "partner_discount", "extra_ad"):
             form_key = f"{field}_{month}"
             new_value = form[form_key].value.strip() if form_key in form else ""
             old_value = str(manual[key].get(field, ""))
             if new_value != old_value:
                 manual[key][field] = new_value
                 changed += 1
-    YEAR_MANUAL_PATH.write_text(json.dumps(manual, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_year_manual_data(manual)
     return changed
 
 
@@ -2324,6 +2709,9 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
         month_key = str(day)[:7]
         monthly_sales[month_key] += amount
 
+    vat_excluded_amounts = [sales_extra_amounts(monthly_sales[f"{year}-{month:02d}"])[0] for month in range(1, 13)]
+    incentive_results = calculate_year(vat_excluded_amounts, load_config(GROWTH_INCENTIVE_PATH))
+
     rows = []
     totals = defaultdict(int)
     for month in range(1, 13):
@@ -2333,11 +2721,19 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
         values = manual.get(key, {})
         tester = parse_int(values.get("tester", ""))
         ad = parse_int(values.get("ad", ""))
-        support = parse_int(values.get("support", ""))
+        incentive = incentive_results[month - 1]
+        support = int(incentive["total"])
+        if int(incentive["band"]) == 0:
+            support_detail = "기준 미달"
+        else:
+            support_detail = f'{int(incentive["band"])}등급 · {float(incentive["rate"]) * 100:g}%'
+        if int(incentive["quarter_extra"]) > 0:
+            support_detail += f' · 분기 추가 {int(incentive["quarter_extra"]):,}원'
         discount = parse_int(values.get("discount", ""))
         partner_discount = parse_int(values.get("partner_discount", ""))
         extra_ad = parse_int(values.get("extra_ad", ""))
         over = ad_budget - tester - ad
+        net = vat_excluded - tester - ad - support - discount - partner_discount - extra_ad
         totals["sales"] += vat_excluded
         totals["budget"] += ad_budget
         totals["tester"] += tester
@@ -2347,18 +2743,20 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
         totals["discount"] += discount
         totals["partner_discount"] += partner_discount
         totals["extra_ad"] += extra_ad
+        totals["net"] += net
         rows.append(
-            f'<tr class="year-row" data-month="{month:02d}" data-sales="{vat_excluded}" data-budget="{ad_budget}">'
+            f'<tr class="year-row" data-month="{month:02d}" data-sales="{vat_excluded}" data-budget="{ad_budget}" data-support="{support}">'
             f"<td>{month}월</td>"
             f'<td class="auto-cell year-sales">{vat_excluded:,}원</td>'
             f'<td class="auto-cell year-budget">{ad_budget:,}원</td>'
             f'<td><input class="money-input tester-input" name="tester_{month}" value="{html.escape(str(values.get("tester", "")), quote=True)}"></td>'
             f'<td><input class="money-input ad-input" name="ad_{month}" value="{html.escape(str(values.get("ad", "")), quote=True)}"></td>'
             f'<td class="over-cell{" negative" if over < 0 else ""}">{over:,}원</td>'
-            f'<td><input class="money-input support-input" name="support_{month}" value="{html.escape(str(values.get("support", "")), quote=True)}"><span class="support-display" style="display:none">{support:,}원</span></td>'
+            f'<td class="auto-cell support-display" title="월 기본 {int(incentive["base"]):,}원 / 분기 추가 {int(incentive["quarter_extra"]):,}원"><strong>{support:,}원</strong><small style="display:block;margin-top:4px;color:#667085;font-size:11px;white-space:nowrap;">{html.escape(support_detail)}</small></td>'
             f'<td><input class="money-input discount-input" name="discount_{month}" value="{html.escape(str(values.get("discount", "")), quote=True)}"><span class="discount-display" style="display:none">{discount:,}원</span></td>'
             f'<td><input class="money-input partner-discount-input" name="partner_discount_{month}" value="{html.escape(str(values.get("partner_discount", "")), quote=True)}"><span class="partner-discount-display" style="display:none">{partner_discount:,}원</span></td>'
             f'<td><input class="money-input extra-ad-input" name="extra_ad_{month}" value="{html.escape(str(values.get("extra_ad", "")), quote=True)}"><span class="extra-ad-display" style="display:none">{extra_ad:,}원</span></td>'
+            f'<td class="auto-cell net-cell{" negative" if net < 0 else ""}" style="font-weight:900;">{net:,}원</td>'
             f"</tr>"
         )
     rows.append(
@@ -2373,6 +2771,7 @@ def render_year_rows(summary_rows: list[tuple[str, int, int, int]]) -> str:
         f'<td class="year-total-discount">{totals["discount"]:,}원</td>'
         f'<td class="year-total-partner-discount">{totals["partner_discount"]:,}원</td>'
         f'<td class="year-total-extra-ad">{totals["extra_ad"]:,}원</td>'
+        f'<td class="year-total-net">{totals["net"]:,}원</td>'
         '</tr>'
     )
     return "\n".join(rows)
@@ -2458,196 +2857,206 @@ def write_sales_display_workbook() -> Path:
 
 
 def render_confirmation_history(record: dict[str, object]) -> str:
+    history = record.get("history", [])
+    if not isinstance(history, list) or not history:
+        return '<div class="history-empty">변경 이력이 없습니다.</div>'
     rows = []
-    for item in reversed(record.get("history", []) if isinstance(record.get("history", []), list) else []):
+    for item in reversed(history):
         if not isinstance(item, dict):
             continue
         changes = item.get("changes", [])
-        change_text = "<br>".join(
-            f'{html.escape(str(change.get("field", "")))}: {html.escape(str(change.get("before", "")))} → {html.escape(str(change.get("after", "")))}'
-            for change in changes if isinstance(change, dict)
-        ) if isinstance(changes, list) else ""
-        rows.append(f'<tr><td>{html.escape(str(item.get("at", "")))}</td><td>{html.escape(str(item.get("user", "")))}</td><td>{html.escape(str(item.get("action", "")))}</td><td>{change_text or "-"}</td><td>{html.escape(str(item.get("reason", "")))}</td></tr>')
-    if not rows:
-        return '<div style="margin-top:8px;">변경 이력이 없습니다.</div>'
-    return f'<div class="history-scroll"><table class="history-table"><thead><tr><th>일시</th><th>작업자</th><th>구분</th><th>변경 내용</th><th>사유</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-
-
-def render_confirmation_panel(day: str, sales_amount: int, record: dict[str, object] | None = None) -> str:
-    record = record if isinstance(record, dict) else {}
-    invoices = record.get("invoices", []) if isinstance(record.get("invoices", []), list) else []
-    invoice_amount = sum(parse_int(item.get("amount", 0)) for item in invoices if isinstance(item, dict))
-    remaining = sales_amount - invoice_amount
-    confirmed = bool(record.get("confirmed")); needs_recheck = bool(record.get("needs_recheck"))
-    if not invoice_amount: label, css = "확인 필요", "status-warn"
-    elif remaining == 0: label, css = "금액 매칭 완료", "status-ok"
-    elif remaining > 0: label, css = f"미발행 잔액 {remaining:,}원", "status-warn"
-    else: label, css = f"초과 발행 {-remaining:,}원", "status-bad"
-    states = []
-    if confirmed: states.append('<span class="status-badge status-ok">계산서 발행 확인 완료</span>')
-    if record.get("edited_after_confirm"): states.append('<span class="status-badge status-bad">확인 완료 후 수정됨</span>')
-    if needs_recheck: states.append('<span class="status-badge status-warn">재확인 필요</span>')
-    reconfirm = '<button class="confirm-action" type="submit" name="action" value="reconfirm" formnovalidate>재확인 완료</button>' if confirmed and needs_recheck and remaining == 0 else ""
-    meta = f'<div class="confirm-meta">확인자: {html.escape(str(record.get("confirmed_by", "")))} · 확인일시: {html.escape(str(record.get("confirmed_at", "")))}</div>' if confirmed else ""
-    invoice_rows = "".join(
-        f'<tr><td>{html.escape(str(item.get("number", "")))}</td><td>{parse_int(item.get("amount", 0)):,}원</td><td>{html.escape(str(item.get("user", "")))}</td><td>{html.escape(str(item.get("at", "")))}</td><td><form method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></td></tr>'
-        for item in invoices if isinstance(item, dict)
+        if isinstance(changes, list):
+            change_text = "<br>".join(
+                f'{html.escape(str(change.get("field", "")))}: '
+                f'{html.escape(str(change.get("before", "")))} → {html.escape(str(change.get("after", "")))}'
+                for change in changes if isinstance(change, dict)
+            )
+        else:
+            change_text = html.escape(str(changes or ""))
+        rows.append(
+            "<tr>"
+            f'<td>{html.escape(str(item.get("at", "")))}</td>'
+            f'<td>{html.escape(str(item.get("user", "")))}</td>'
+            f'<td>{html.escape(str(item.get("action", "")))}</td>'
+            f'<td>{change_text or "-"}</td>'
+            f'<td>{html.escape(str(item.get("reason", "")))}</td>'
+            "</tr>"
+        )
+    return (
+        '<div class="history-scroll"><table class="history-table"><thead><tr>'
+        '<th>일시</th><th>작업자</th><th>구분</th><th>변경 내용</th><th>사유</th>'
+        f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     )
-    entry_form = (f'<form method="post" action="/sales/confirm" class="confirm-form">'
-        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
-        f'<label>계산서 번호<input class="confirm-money" name="invoice_number" required placeholder="계산서 번호"></label><label>발행 금액<input class="confirm-money" name="invoice_amount" inputmode="numeric" required placeholder="금액 입력"></label>'
-        f'<button class="confirm-action" type="submit" name="action" value="add_invoice">계산서 추가</button>{reconfirm}</form>')
-    invoice_table = f'<table class="history-table" style="margin-top:10px;"><thead><tr><th>계산서 번호</th><th>발행 금액</th><th>등록자</th><th>등록일시</th><th>관리</th></tr></thead><tbody>{invoice_rows}</tbody></table>' if invoice_rows else ""
-    history = record.get("history", []) if isinstance(record.get("history", []), list) else []
-    history_detail = f'<details class="history-details"><summary>변경 이력 보기</summary>{render_confirmation_history(record)}</details>' if history else ""
-    detail_body = f'<div class="invoice-detail-body">{invoice_table}<div class="confirm-states">{"".join(states)}</div>{meta}{history_detail}</div>'
-    complete_class = " is-complete" if confirmed else ""
-    head = f'<div class="invoice-row"><strong>{html.escape(day)}</strong><div class="invoice-total-block"><span>납품 총금액</span><span class="invoice-total">{sales_amount:,}원</span></div><span class="status-badge {css}">{label}</span>{entry_form if not confirmed else ""}</div>'
+
+
+def render_confirmation_panel(month: str, sales_amount: int) -> str:
+    record = sales_confirmation(month)
+    invoice_amount = parse_int(record.get("invoice_amount", 0))
+    confirmed = bool(record.get("confirmed"))
+    needs_recheck = bool(record.get("needs_recheck"))
+    complete_after_edit = bool(record.get("edited_after_confirm"))
+    if not invoice_amount:
+        match_label, match_class = "확인 필요", "status-warn"
+    elif invoice_amount == sales_amount:
+        match_label, match_class = "금액 매칭 완료", "status-ok"
+    else:
+        difference = invoice_amount - sales_amount
+        match_label, match_class = f"금액 불일치 (차액 {difference:+,}원)", "status-bad"
+    state_labels = []
     if confirmed:
-        content = f'<details class="invoice-detail"><summary>계산서 상세 보기 / 수정</summary><div class="invoice-detail-body">{entry_form}{invoice_table}<div class="confirm-states">{"".join(states)}</div>{meta}{history_detail}</div></details>'
-    else:
-        content = detail_body
-    return f'<div class="invoice-check{complete_class}">{head}{content}</div>'
-
-
-def render_confirmation_cells(day: str, sales_amount: int, record: dict[str, object] | None = None, legacy_complete: bool = False) -> tuple[str, bool]:
-    record = record if isinstance(record, dict) else {}
-    invoices = record.get("invoices", []) if isinstance(record.get("invoices", []), list) else []
-    issued = sum(parse_int(item.get("amount", 0)) for item in invoices if isinstance(item, dict))
-    remaining = sales_amount - issued
-    confirmed = legacy_complete or bool(record.get("confirmed"))
-    if legacy_complete:
-        label, css = "기존 완료", "status-ok"
-    elif confirmed:
-        label, css = "매칭 완료", "status-ok"
-    elif issued and remaining > 0:
-        label, css = f"잔액 {remaining:,}원", "status-warn"
-    elif remaining < 0:
-        label, css = f"초과 {-remaining:,}원", "status-bad"
-    else:
-        label, css = "확인 필요", "status-warn"
-    form_id = f'invoice-{re.sub(r"\D", "", day)}'
-    disabled = " disabled" if legacy_complete else ""
-    number_cell = f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required{disabled}></td>'
-    amount_cell = f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required{disabled}></td>'
-    invoice_lines = "".join(
-        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
-        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 계산서를 삭제할까요?\')">'
-        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
-        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
-        for item in invoices if isinstance(item, dict)
+        state_labels.append('<span class="status-badge status-ok">계산서 발행 확인 완료</span>')
+    if complete_after_edit:
+        state_labels.append('<span class="status-badge status-bad">확인 완료 후 수정됨</span>')
+    if needs_recheck:
+        state_labels.append('<span class="status-badge status-warn">재확인 필요</span>')
+    checked = " checked" if confirmed else ""
+    confirm_info = ""
+    if confirmed:
+        confirm_info = (
+            '<div class="confirm-meta">'
+            f'확인자: {html.escape(str(record.get("confirmed_by", "")))} · '
+            f'확인일시: {html.escape(str(record.get("confirmed_at", "")))} · '
+            f'확인 당시 금액: {parse_int(record.get("confirmed_invoice_amount", invoice_amount)):,}원 / '
+            f'{parse_int(record.get("confirmed_sales_amount", sales_amount)):,}원</div>'
+        )
+    recheck_button = ""
+    if confirmed and needs_recheck and invoice_amount == sales_amount:
+        recheck_button = '<button class="confirm-action" type="submit" name="action" value="reconfirm">재확인 완료</button>'
+    return (
+        f'<div class="invoice-check" data-confirmed="{str(confirmed).lower()}" data-needs-recheck="{str(needs_recheck).lower()}">'
+        f'<form method="post" action="/sales/confirm" class="confirm-form">'
+        f'<input type="hidden" name="month" value="{html.escape(month, quote=True)}">'
+        f'<input type="hidden" name="sales_amount" value="{sales_amount}">'
+        f'<strong>{html.escape(month)} 계산서 확인</strong>'
+        f'<label>매출확인용 금액<input class="confirm-money" value="{sales_amount:,}" readonly></label>'
+        f'<label>세금계산서 발행 금액<input class="confirm-money" name="invoice_amount" inputmode="numeric" value="{invoice_amount or ""}" placeholder="금액 입력"></label>'
+        f'<span class="status-badge {match_class}">{match_label}</span>'
+        f'<label class="confirm-check"><input type="checkbox" name="confirmed" value="1"{checked} onchange="if(!this.checked&&!confirm(\'계산서 발행 확인 완료 상태를 해제하시겠습니까?\'))this.checked=true;"> 계산서 발행 확인 완료</label>'
+        f'<button class="confirm-action" type="submit" name="action" value="save">저장</button>{recheck_button}'
+        f'</form><div class="confirm-states">{"".join(state_labels)}</div>{confirm_info}'
+        f'<details class="history-details"><summary>변경 이력 보기</summary>{render_confirmation_history(record)}</details>'
+        '</div>'
     )
-    details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
-    add_button = "" if legacy_complete else f'<button class="confirm-action" type="submit" form="{form_id}">추가</button>'
-    action_cell = (
-        f'<td><form id="{form_id}" method="post" action="/sales/confirm">'
-        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
-        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span>{add_button}</div>{details}</td>'
-    )
-    return number_cell + amount_cell + action_cell, confirmed
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
-    summary_rows, detail_rows = load_monthly_sales_summary(
-        limit_rows=None,
-        aggregate_by_sku=not folder_mode,
-    )
-    confirmation_data = load_sales_confirmations()
-    confirmation_days = confirmation_data.get("days", {})
-    if not isinstance(confirmation_days, dict): confirmation_days = {}
-    completed_months = confirmation_data.get("completed_months", [])
-    if not isinstance(completed_months, list): completed_months = []
+    if folder_mode:
+        summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=True)
+        _po_summary_rows, po_detail_rows = load_monthly_sales_summary(aggregate_by_sku=False)
+    else:
+        summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=True)
+        po_detail_rows = []
     current_month = datetime.now().strftime("%Y-%m")
     visible_detail_rows = detail_rows if folder_mode else [
         row for row in detail_rows if str(row[1]).startswith(current_month)
     ]
-    confirmation_panels = ""
+    visible_po_detail_rows = po_detail_rows if folder_mode else []
     if summary_rows:
         def sales_extra_amounts(amount: int) -> tuple[int, int]:
             vat_excluded = round(amount / 1.1)
             ad_budget = round(vat_excluded * 0.035)
             return vat_excluded, ad_budget
 
-        summary_by_month = defaultdict(list)
-        for row in summary_rows: summary_by_month[str(row[0])[:7]].append(row)
-        latest_summary_month = max(summary_by_month.keys())
-        summary_sections = []
-        for month in sorted(summary_by_month.keys(), reverse=True):
-            rows_for_month = sorted(summary_by_month[month], key=lambda row: str(row[0]))
-            body_parts = []
-            for day, qty, amount, po_count in rows_for_month:
-                day_text = str(day)
-                cells, is_complete = render_confirmation_cells(day_text, amount, confirmation_days.get(day_text, {}), day_text[:7] in completed_months)
-                complete_class = " is-complete" if is_complete else ""
-                body_parts.append(f'<tr class="summary-row{complete_class}" data-day="{html.escape(day_text)}" data-month="{html.escape(month, quote=True)}" data-po-count="{po_count}"><td>{html.escape(day_text)}</td><td>{po_count:,}</td><td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td><td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td>{cells}</tr>')
-            body = "".join(body_parts)
-            month_qty = sum(row[1] for row in rows_for_month); month_amount = sum(row[2] for row in rows_for_month); month_po = sum(row[3] for row in rows_for_month)
+        monthly_summary: dict[str, list[tuple[str, int, int, int]]] = defaultdict(list)
+        for day, qty, amount, po_count in summary_rows:
+            monthly_summary[str(day)[:7]].append((str(day), qty, amount, po_count))
+        latest_summary_month = max(monthly_summary.keys())
+        summary_parts = []
+        for month in sorted(monthly_summary.keys(), reverse=True):
+            rows_for_month = sorted(monthly_summary[month], key=lambda row: row[0])
+            month_qty = sum(qty for _day, qty, _amount, _po_count in rows_for_month)
+            month_amount = sum(amount for _day, _qty, amount, _po_count in rows_for_month)
+            month_po_count = sum(po_count for _day, _qty, _amount, po_count in rows_for_month)
             month_vat, month_budget = sales_extra_amounts(month_amount)
-            body += f'<tr class="summary-total-row" data-month="{html.escape(month, quote=True)}" style="background:#fff2cc;font-weight:700;"><td>월 합계</td><td class="summary-total-po">{month_po:,}</td><td class="summary-total-qty">{month_qty:,}</td><td class="summary-total-amount">{month_amount:,}원</td><td class="summary-total-vat">{month_vat:,}원</td><td class="summary-total-budget">{month_budget:,}원</td><td colspan="3"></td></tr>'
-            open_attr = " open" if month == latest_summary_month else ""
-            table = f'<table class="summary-table resizable-table"><colgroup><col style="width:8%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:18%;"></colgroup><thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead><tbody>{body}</tbody></table>'
-            summary_sections.append(f'<details class="invoice-month"{open_attr}><summary>{html.escape(month)} 일자별 합계</summary>{table}</details>')
-        summary_html = (
-            '<div class="invoice-toolbar"><form method="post" action="/sales/confirm" class="summary-invoice-actions">'
-            '<label>기존 완료 월 <input type="month" name="month" required></label>'
-            '<button class="toggle-btn" type="submit" name="action" value="skip_month" onclick="return confirm(\'선택한 월 전체를 계산서 확인 완료로 처리할까요?\')">기존 완료 월 처리</button>'
-            '</form><button class="toggle-btn" type="button" onclick="toggleCompletedInvoices(this)">완료건 숨기기</button></div>'
-            + "".join(summary_sections)
-        )
-        confirmation_panels = ''
+            confirmation_panel = render_confirmation_panel(month, month_amount)
+            year_text, month_text = month.split("-", 1) if "-" in month else ("", month)
+            collapsed_class = "" if month == latest_summary_month else " is-collapsed"
+            toggle_label = "숨기기" if month == latest_summary_month else "펼치기"
+            row_html = "\n".join(
+                f'<tr class="summary-row" data-day="{html.escape(day)}" data-po-count="{po_count}">'
+                f"<td>{html.escape(day)}</td><td>{po_count:,}</td>"
+                f'<td class="summary-qty">{qty:,}</td><td class="summary-amount">{amount:,}원</td>'
+                f'<td class="summary-vat">{sales_extra_amounts(amount)[0]:,}원</td><td class="summary-budget">{sales_extra_amounts(amount)[1]:,}원</td></tr>'
+                for day, qty, amount, po_count in rows_for_month
+            )
+            summary_parts.append(
+                f'<section class="summary-month-section{collapsed_class}" data-month="{html.escape(month, quote=True)}">'
+                f'<div class="summary-month-head">'
+                f'<div class="summary-month-title">{html.escape(year_text)}년 {html.escape(month_text)}월 매출</div>'
+                f'<button class="summary-month-toggle" type="button" onclick="toggleSummaryMonth(this)">{toggle_label}</button></div>'
+                f'<div class="summary-month-body"><table class="summary-table resizable-table">'
+                f'<colgroup><col style="width:15%;"><col style="width:10%;"><col style="width:13%;"><col style="width:22%;"><col style="width:20%;"><col style="width:20%;"></colgroup>'
+                f'<thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th></tr></thead>'
+                f'<tbody>{row_html}'
+                f'<tr class="summary-month-total"><td>월 합계</td><td class="summary-month-po">{month_po_count:,}</td><td class="summary-month-qty">{month_qty:,}</td><td class="summary-month-amount">{month_amount:,}원</td><td class="summary-month-vat">{month_vat:,}원</td><td class="summary-month-budget">{month_budget:,}원</td></tr>'
+                f'</tbody></table>{confirmation_panel}</div></section>'
+            )
+        summary_html = "\n".join(summary_parts)
     else:
-        summary_html = '<div class="invoice-check">아직 누적된 월매출 자료가 없습니다.</div>'
+        summary_html = '<div class="summary-month-section"><div class="summary-month-body"><table class="summary-table"><tbody><tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr></tbody></table></div></div>'
 
     if visible_detail_rows:
-        by_day = defaultdict(list)
-        for row_no, day, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in visible_detail_rows:
-            by_day[day].append((row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed))
+        detail_sources = [("sku", visible_detail_rows)]
+        if folder_mode:
+            po_rows = []
+            for row in visible_po_detail_rows:
+                if str(row[1])[:7] < "2026-07":
+                    continue
+                row = list(row)
+                row[8] = str(row[8]).replace("PO:", "").strip()
+                po_rows.append(row)
+            detail_sources.append(("po", po_rows))
         parts = []
-        by_month = defaultdict(list)
-        for day in sorted(by_day.keys(), reverse=True):
-            by_month[str(day)[:7]].append(day)
-        for month in sorted(by_month.keys(), reverse=True):
-            if folder_mode:
-                parts.append(
-                    f'<tr class="month-folder is-closed" data-month="{html.escape(month, quote=True)}">'
-                    f'<th colspan="8">{html.escape(month)} '
-                    f'<button class="toggle-btn" type="button" onclick="toggleMonthFolder(\'{html.escape(month, quote=True)}\', this)">펼치기</button> '
-                    f'<button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_month" value="{html.escape(month, quote=True)}" onclick="return confirmDeleteMonth(\'{html.escape(month, quote=True)}\')">월 삭제</button></th></tr>'
-                )
-            for day in by_month[month]:
-                day_qty = sum(row[4] for row in by_day[day])
-                day_amount = sum(row[6] for row in by_day[day])
+        for view_mode, source_rows in detail_sources:
+            by_day = defaultdict(list)
+            for row_no, day, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in source_rows:
+                by_day[day].append((row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed))
+            by_month = defaultdict(list)
+            for day in sorted(by_day.keys(), reverse=True):
+                by_month[str(day)[:7]].append(day)
+            for month in sorted(by_month.keys(), reverse=True):
                 hidden_class = " month-hidden" if folder_mode else ""
-                parts.append(
-                    f'<tr class="detail-day-row{hidden_class}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" style="background:#e8f1fb;color:#1f4e79;">'
-                    f'<span data-day-total="{html.escape(str(day), quote=True)}">{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원</span> '
-                    f'<button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_day" value="{html.escape(str(day), quote=True)}" onclick="return confirmDeleteDay(\'{html.escape(str(day), quote=True)}\')">일자 삭제</button></th></tr>'
-                )
-                for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
-                    changed_class = " changed" if changed else ""
-                    day_record = confirmation_days.get(str(day), {})
-                    day_confirmed = bool(day_record.get("confirmed")) if isinstance(day_record, dict) else False
-                    month_confirmed = str(day_confirmed or str(day)[:7] in completed_months).lower()
-                    if folder_mode:
-                        parts.append(
-                            f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
-                            f'<input type="hidden" name="row" value="{row_no}"></td>'
-                            f"<td>{html.escape(str(name))}</td>"
-                            f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
-                            f'name="qty_{row_no}" value="{qty}"></td>'
-                            f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td>{html.escape(str(remarks))}</td>'
-                            f'<td><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
-                            f'placeholder="수정 사유"></td>'
-                            f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
-                        )
-                    else:
-                        parts.append(
-                            f'<tr class="detail-row {changed_class.strip()}{hidden_class}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
-                            f"<td>{html.escape(str(sku))}</td><td>{html.escape(str(name))}</td>"
-                            f'<td class="{changed_class.strip()}">{qty:,}</td>'
-                            f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td>{html.escape(str(remarks))}</td>'
-                            f"<td>{html.escape(str(memo))}</td><td>조회용</td></tr>"
-                        )
+                mode_hidden = " view-hidden" if view_mode != "sku" else ""
+                mode_label = "SKU 합계" if view_mode == "sku" else "PO별 상세"
+                if folder_mode:
+                    parts.append(
+                        f'<tr class="month-folder is-closed{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}">'
+                        f'<th colspan="8">{html.escape(month)} {mode_label} '
+                        f'<button class="toggle-btn" type="button" onclick="toggleMonthFolder(\'{html.escape(month, quote=True)}\', this)">펼치기</button> '
+                        f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_month\" value=\"{html.escape(month, quote=True)}\" onclick=\"return confirmDeleteMonth(\'{html.escape(month, quote=True)}\')\">월 삭제</button>"}</th></tr>'
+                    )
+                for day in by_month[month]:
+                    day_qty = sum(row[4] for row in by_day[day])
+                    day_amount = sum(row[6] for row in by_day[day])
+                    parts.append(
+                        f'<tr class="detail-day-row{hidden_class}{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" data-day-total="{html.escape(str(day), quote=True)}" data-view-mode="{view_mode}" style="background:#e8f1fb;color:#1f4e79;">'
+                        f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 '
+                        f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_day\" value=\"{html.escape(str(day), quote=True)}\" onclick=\"return confirmDeleteDay(\'{html.escape(str(day), quote=True)}\')\">일자 삭제</button>"}</th></tr>'
+                    )
+                    for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, changed in sorted(by_day[day], key=lambda row: str(row[1])):
+                        changed_class = " changed" if changed else ""
+                        month_record = sales_confirmation(str(day)[:7])
+                        month_confirmed = str(bool(month_record.get("confirmed"))).lower()
+                        if folder_mode and view_mode == "po":
+                            parts.append(
+                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="po" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-po-list="{html.escape(str(remarks), quote=True)}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
+                                f'<input type="hidden" name="row" value="{row_no}"></td>'
+                                f"<td>{html.escape(str(name))}</td>"
+                                f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
+                                f'name="qty_{row_no}" value="{qty}"></td>'
+                                f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
+                                f'<td><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
+                                f'placeholder="수정 사유"></td>'
+                                f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
+                            )
+                        else:
+                            parts.append(
+                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="sku" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
+                                f"<td>{html.escape(str(sku))}</td><td>{html.escape(str(name))}</td>"
+                                f'<td class="{changed_class.strip()}">{qty:,}</td>'
+                                f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
+                                f"<td>{html.escape(str(memo))}</td><td>조회용</td></tr>"
+                            )
         detail_html = "\n".join(parts)
     else:
         detail_html = '<tr><td colspan="8">해당 월 납품 상품 내역이 없습니다.</td></tr>'
@@ -2663,8 +3072,8 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         SALES_PAGE
         .replace("{message}", message)
         .replace("{year_rows}", year_rows)
+        .replace("{tester_files}", render_tester_files())
         .replace("{summary_rows}", summary_html)
-        .replace("{confirmation_panels}", confirmation_panels)
         .replace("{detail_rows}", detail_html)
         .replace("{page_title}", page_title)
         .replace("{page_sub}", page_sub)
@@ -2698,52 +3107,6 @@ def extract_simple_no(values: list[object]) -> str:
     return ""
 
 
-def is_simpleworks_child_row(value: object) -> bool:
-    text = str(value or "").strip()
-    return bool(re.match(r"^(?:ㄴ|└|┗|┕|┖|↳|⌞)\s*", text))
-
-
-class SimpleworksHtmlTableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.rows: list[list[str]] = []
-        self.current_row: list[str] | None = None
-        self.current_cell: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        tag = tag.lower()
-        if tag == "tr":
-            self.current_row = []
-        elif tag in {"td", "th"} and self.current_row is not None:
-            self.current_cell = []
-        elif tag == "br" and self.current_cell is not None:
-            self.current_cell.append(" ")
-
-    def handle_data(self, data: str) -> None:
-        if self.current_cell is not None:
-            self.current_cell.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"td", "th"} and self.current_row is not None and self.current_cell is not None:
-            self.current_row.append(re.sub(r"\s+", " ", "".join(self.current_cell)).strip())
-            self.current_cell = None
-        elif tag == "tr" and self.current_row is not None:
-            if self.current_row:
-                self.rows.append(self.current_row)
-            self.current_row = None
-
-
-def read_simpleworks_html_rows(raw: bytes) -> list[list[str]]:
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("cp949", errors="replace")
-    parser = SimpleworksHtmlTableParser()
-    parser.feed(text)
-    return parser.rows
-
-
 def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     master_path = get_saved_master_path()
     if master_path is None:
@@ -2766,63 +3129,43 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
 
 
 def parse_simpleworks_excel(path: Path) -> dict[str, int]:
-    if path.suffix.lower() == ".xls":
-        raw = path.read_bytes()
-        prefix = raw.lstrip(b"\xef\xbb\xbf\x00\t\r\n ").lower()
-        if prefix.startswith((b"<table", b"<html", b"<!doctype")):
-            rows = read_simpleworks_html_rows(raw)
-        else:
-            book = xlrd.open_workbook(file_contents=raw)
-            sheet = book.sheet_by_index(0)
-            rows = [[sheet.cell_value(row, col) for col in range(sheet.ncols)] for row in range(sheet.nrows)]
-    else:
-        wb = load_workbook(path, data_only=True)
-        ws = wb.active
-        rows = [[ws.cell(row, col).value for col in range(1, ws.max_column + 1)] for row in range(1, ws.max_row + 1)]
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
     header_row = None
     product_col = None
     qty_col = None
-    for row_index, row_values in enumerate(rows[:30]):
-        for col_index, value in enumerate(row_values):
-            text = norm_header(value)
+    for row in range(1, min(ws.max_row, 30) + 1):
+        for col in range(1, ws.max_column + 1):
+            text = norm_header(ws.cell(row, col).value)
             if text in ["상품명", "상품"]:
-                header_row = row_index
-                product_col = col_index
+                header_row = row
+                product_col = col
             if text == "수량":
-                header_row = row_index if header_row is None else header_row
-                qty_col = col_index
-        if product_col is not None and qty_col is not None:
+                header_row = row if header_row is None else header_row
+                qty_col = col
+        if product_col and qty_col:
             break
 
-    candidates: list[tuple[str, int, bool]] = []
-    start_row = (header_row + 1) if header_row is not None else 0
-    for values in rows[start_row:]:
+    quantities: dict[str, int] = defaultdict(int)
+    start_row = (header_row + 1) if header_row else 1
+    for row in range(start_row, ws.max_row + 1):
+        values = [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
         if all(value in [None, ""] for value in values):
             continue
-        product_value = values[product_col] if product_col is not None and product_col < len(values) else ""
-        simple_no = extract_simple_no([product_value] if product_col is not None else values)
+        simple_no = extract_simple_no(values)
         if not simple_no:
             continue
-        if qty_col is not None and qty_col < len(values):
-            qty_match = re.search(r"-?[\d,]+(?:\.\d+)?", str(values[qty_col] or ""))
-            qty = int(float(qty_match.group(0).replace(",", ""))) if qty_match else 0
+        if qty_col:
+            qty = parse_int(ws.cell(row, qty_col).value)
         else:
             qty = 0
             for value in reversed(values):
                 text = str(value or "").strip()
                 if re.search(r"\d+\s*개?$", text) or isinstance(value, (int, float)):
-                    qty_match = re.search(r"-?[\d,]+(?:\.\d+)?", text)
-                    qty = int(float(qty_match.group(0).replace(",", ""))) if qty_match else 0
+                    qty = parse_int(text)
                     break
         if qty > 0:
-            candidates.append((simple_no, qty, is_simpleworks_child_row(product_value)))
-
-    quantities: dict[str, int] = defaultdict(int)
-    for index, (simple_no, qty, is_child) in enumerate(candidates):
-        next_is_child = index + 1 < len(candidates) and candidates[index + 1][2]
-        if not is_child and next_is_child:
-            continue
-        quantities[simple_no] += qty
+            quantities[simple_no] += qty
     return dict(quantities)
 
 
@@ -3190,10 +3533,10 @@ def render_check_result(
     if not rows:
         rows.append('<tr><td colspan="7">검수할 자료가 없습니다.</td></tr>')
     return (
-        '<section class="panel"><div class="panel-head"><span>검수 결과</span><button class="btn" type="button" onclick="downloadCheckResults()">검수결과 엑셀 다운로드</button></div><div class="panel-body">'
-        f'<div class="summary check-result-summary"><div>일치<b>{ok_count:,}</b></div><div>수량차이<b>{diff_count:,}</b></div>'
+        '<section class="panel"><div class="panel-head">검수 결과</div><div class="panel-body">'
+        f'<div class="summary"><div>일치<b>{ok_count:,}</b></div><div>수량차이<b>{diff_count:,}</b></div>'
         f'<div>쿠팡만 있음<b>{coupang_only + len(unmapped):,}</b></div><div>심플웍스만 있음<b>{simple_only:,}</b></div></div>'
-        '<div class="scroll" style="margin-top:14px;"><table class="check-result-table"><colgroup><col style="width:120px;"><col style="width:110px;"><col style="width:120px;"><col style="width:380px;"><col style="width:110px;"><col style="width:120px;"><col style="width:100px;"></colgroup>'
+        '<div class="scroll" style="margin-top:14px;"><table><colgroup><col style="width:120px;"><col style="width:110px;"><col style="width:120px;"><col style="width:380px;"><col style="width:110px;"><col style="width:120px;"><col style="width:100px;"></colgroup>'
         '<thead><tr><th>상태</th><th>심플웍스 No</th><th>SKU ID</th><th>상품명</th><th>쿠팡 수량</th><th>심플웍스 수량</th><th>차이</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table></div></div></section>"
     )
@@ -3255,41 +3598,46 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
 
 
 def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
-    action = form["action"].value.strip() if "action" in form else "save"
-    data = load_sales_confirmations(); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if action == "skip_month":
-        month = form["month"].value.strip() if "month" in form else ""
-        if not re.fullmatch(r"\d{4}-\d{2}", month): raise ValueError("완료 처리할 월을 선택해 주세요.")
-        completed = data.setdefault("completed_months", [])
-        if month not in completed: completed.append(month)
-        save_sales_confirmations(data)
-        return f"{month} 전체를 기존 계산서 확인 완료로 처리했습니다."
-    day = form["day"].value.strip() if "day" in form else ""
+    month = form["month"].value.strip() if "month" in form else ""
     sales_amount = parse_int(form["sales_amount"].value) if "sales_amount" in form else 0
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day): raise ValueError("확인할 납품일자가 올바르지 않습니다.")
-    days = data.setdefault("days", {}); record = days.setdefault(day, {}); invoices = record.setdefault("invoices", []); history = record.setdefault("history", [])
-    if action == "add_invoice":
-        number = form["invoice_number"].value.strip() if "invoice_number" in form else ""
-        amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
-        if not number or amount <= 0: raise ValueError("계산서 번호와 발행 금액을 입력해 주세요.")
-        if any(str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)): raise ValueError("이미 등록된 계산서 번호입니다.")
-        invoices.append({"id":uuid.uuid4().hex[:12],"number":number,"amount":amount,"user":username,"at":now})
-        history.append({"at":now,"user":username,"action":"계산서 추가","reason":number,"changes":[{"field":"발행 금액","before":0,"after":amount}]})
-    elif action == "delete_invoice":
-        invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
-        removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
-        if removed is None: raise ValueError("삭제할 계산서를 찾지 못했습니다.")
-        invoices.remove(removed); history.append({"at":now,"user":username,"action":"계산서 삭제","reason":str(removed.get("number","")),"changes":[]})
-    total = sum(parse_int(item.get("amount",0)) for item in invoices if isinstance(item,dict))
-    matched = total == sales_amount and sales_amount > 0
-    record.update({"sales_amount":sales_amount,"confirmed":matched})
-    if matched:
-        record.update({"confirmed_by":username,"confirmed_at":now,"confirmed_invoice_amount":total,"confirmed_sales_amount":sales_amount})
-    if action == "reconfirm" and matched:
-        record.update({"needs_recheck":False,"edited_after_confirm":False,"reconfirmed_by":username,"reconfirmed_at":now})
-        history.append({"at":now,"user":username,"action":"재확인 완료","reason":"기존 변경 이력 확인","changes":[]})
+    invoice_amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
+    action = form["action"].value.strip() if "action" in form else "save"
+    wants_confirmed = "confirmed" in form or action == "reconfirm"
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise ValueError("확인할 월이 올바르지 않습니다.")
+    if wants_confirmed and (not invoice_amount or invoice_amount != sales_amount):
+        raise ValueError("두 금액이 정확히 일치할 때만 계산서 발행 확인을 완료할 수 있습니다.")
+
+    data = load_sales_confirmations()
+    months = data.setdefault("months", {})
+    record = months.setdefault(month, {})
+    old_confirmed = bool(record.get("confirmed"))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    history = record.setdefault("history", [])
+    if old_confirmed and not wants_confirmed:
+        history.append({"at": now, "user": username, "action": "확인 완료 해제", "reason": "사용자 확인 후 해제", "changes": []})
+    elif action == "reconfirm":
+        history.append({"at": now, "user": username, "action": "재확인 완료", "reason": "기존 변경 이력 확인", "changes": []})
+    elif wants_confirmed and not old_confirmed:
+        history.append({"at": now, "user": username, "action": "계산서 발행 확인 완료", "reason": "금액 일치 확인", "changes": []})
+
+    record["invoice_amount"] = invoice_amount
+    record["sales_amount"] = sales_amount
+    record["confirmed"] = wants_confirmed
+    if wants_confirmed:
+        record["confirmed_by"] = username
+        record["confirmed_at"] = now
+        record["confirmed_invoice_amount"] = invoice_amount
+        record["confirmed_sales_amount"] = sales_amount
+    if action == "reconfirm":
+        record["needs_recheck"] = False
+        record["edited_after_confirm"] = False
+        record["reconfirmed_by"] = username
+        record["reconfirmed_at"] = now
     save_sales_confirmations(data)
-    return f"{day} 계산서 정보를 저장했습니다. 현재 미발행 잔액은 {sales_amount-total:,}원입니다."
+    if action == "reconfirm":
+        return f"{month} 변경 이력을 확인하고 재확인 완료했습니다."
+    return f"{month} 계산서 발행 확인 정보를 저장했습니다."
 
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
@@ -3300,7 +3648,9 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
 
     changed = 0
     override_reason = form["override_reason"].value.strip() if "override_reason" in form else ""
-    confirmation_data = load_sales_confirmations(); confirmation_days = confirmation_data.setdefault("days", {}); completed_months = confirmation_data.setdefault("completed_months", []); audit_by_day = defaultdict(list)
+    confirmation_data = load_sales_confirmations()
+    confirmation_months = confirmation_data.setdefault("months", {})
+    audit_by_month: dict[str, list[dict[str, object]]] = defaultdict(list)
     for item in row_values:
         row = parse_int(item.value)
         if row < 2 or row > ws.max_row:
@@ -3316,24 +3666,34 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         old_memo = str(ws.cell(row, 11).value or "").strip()
         row_changes = []
         if str(adjusted_value) != old_adjusted:
-            row_changes.append({"field":f"{ws.cell(row,4).value} 수량","before":parse_int(old_adjusted,original_qty),"after":new_qty})
+            row_changes.append({"field": f"{ws.cell(row, 4).value} 수량", "before": parse_int(old_adjusted, original_qty), "after": new_qty})
             ws.cell(row, 10).value = adjusted_value
             changed += 1
         if new_memo != old_memo:
-            row_changes.append({"field":f"{ws.cell(row,4).value} 메모","before":old_memo,"after":new_memo})
+            row_changes.append({"field": f"{ws.cell(row, 4).value} 메모", "before": old_memo, "after": new_memo})
             ws.cell(row, 11).value = new_memo
             changed += 1
-        day = str(ws.cell(row,1).value or ""); record = confirmation_days.get(day,{})
-        is_confirmed = (isinstance(record,dict) and record.get("confirmed")) or day[:7] in completed_months
-        if row_changes and is_confirmed:
-            if not override_reason: raise ValueError("계산서 발행 확인 완료 건을 수정하려면 수정 사유가 필요합니다.")
-            audit_by_day[day].extend(row_changes)
+        month = str(ws.cell(row, 1).value or "")[:7]
+        month_record = confirmation_months.get(month, {}) if isinstance(confirmation_months, dict) else {}
+        if row_changes and isinstance(month_record, dict) and month_record.get("confirmed"):
+            if not override_reason:
+                raise ValueError("계산서 발행 확인 완료 건을 수정하려면 수정 사유가 필요합니다.")
+            audit_by_month[month].extend(row_changes)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for day, changes in audit_by_day.items():
-        record = confirmation_days.setdefault(day,{}); record["needs_recheck"] = True; record["edited_after_confirm"] = True
-        record.setdefault("history",[]).append({"at":now,"user":username,"action":"확인 완료 후 수정","reason":override_reason,"changes":changes})
+    for month, changes in audit_by_month.items():
+        record = confirmation_months.setdefault(month, {})
+        record["needs_recheck"] = True
+        record["edited_after_confirm"] = True
+        record.setdefault("history", []).append({
+            "at": now,
+            "user": username,
+            "action": "확인 완료 후 수정",
+            "reason": override_reason,
+            "changes": changes,
+        })
     wb.save(SALES_LEDGER_PATH)
-    if audit_by_day: save_sales_confirmations(confirmation_data)
+    if audit_by_month:
+        save_sales_confirmations(confirmation_data)
     write_sales_display_workbook()
     backup_sales_files_to_supabase()
     return changed
@@ -3451,23 +3811,6 @@ class BonnieHandler(BaseHTTPRequestHandler):
             '<a href="/logout" style="color:#fff;font-weight:800;text-decoration:none;">로그아웃</a>'
             '</div>'
         )
-        date_cleanup = """
-<style>
-  input[type="date"].date-empty:not(:focus) { color:transparent !important; }
-  input[type="date"].date-empty:not(:focus)::-webkit-datetime-edit { color:transparent; }
-</style>
-<script>
-  document.addEventListener("DOMContentLoaded", function() {
-    document.querySelectorAll('input[type="date"]').forEach(function(input) {
-      function syncEmptyDate() { input.classList.toggle("date-empty", !input.value); }
-      input.addEventListener("input", syncEmptyDate);
-      input.addEventListener("change", syncEmptyDate);
-      syncEmptyDate();
-    });
-  });
-</script>
-"""
-        text = text.replace("</head>", f"{date_cleanup}</head>", 1)
         return text.replace("</aside>", f"{admin_link}{user_html}</aside>", 1)
 
     def page(self, message: str = "") -> str:
@@ -3484,7 +3827,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
             rows = '<tr><td colspan="10">저장된 기초자료가 없습니다. 먼저 PO 변환 화면에서 기초자료를 올려주세요.</td></tr>'
         else:
             rows = render_master_rows(master_path)
-        return self.decorate_page(MASTER_PAGE.replace("{message}", message).replace("{rows}", rows))
+        return self.decorate_page(
+            MASTER_PAGE
+            .replace("{message}", message)
+            .replace("{incentive_tables}", render_growth_incentive_tables())
+            .replace("{rows}", rows)
+        )
 
     def pallet_page(self, message: str = "") -> str:
         saved_master = get_saved_master_path()
@@ -3567,6 +3915,28 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 shutil.copyfileobj(f, self.wfile)
             return
 
+        if parsed.path == "/sales/tester/download":
+            if self.require_permission("sales") is None:
+                return
+            file_id = parse_qs(parsed.query).get("id", [""])[-1]
+            item = next((value for value in load_tester_files_meta() if str(value.get("id")) == file_id), None)
+            if item is None:
+                self.send_html(render_sales_page(build_message("err", "체험단 원본 파일을 찾지 못했습니다.")), status=404)
+                return
+            stored_path = TESTER_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+            restore_file_from_supabase(str(item.get("file_key", "")), stored_path)
+            if not stored_path.exists():
+                self.send_html(render_sales_page(build_message("err", "저장된 체험단 원본 파일을 복원하지 못했습니다.")), status=404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(str(item.get('name', '체험단.xlsx')))}")
+            self.send_header("Content-Length", str(stored_path.stat().st_size))
+            self.end_headers()
+            with stored_path.open("rb") as file:
+                shutil.copyfileobj(file, self.wfile)
+            return
+
         if parsed.path.startswith("/download/"):
             if self.require_user() is None:
                 return
@@ -3626,6 +3996,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     return
                 self.handle_master_save()
                 return
+            if path == "/master/growth-incentive/save":
+                if self.require_permission("master") is None:
+                    return
+                self.handle_growth_incentive_save()
+                return
             if path == "/master/upload":
                 if self.require_permission("po_convert") is None:
                     return
@@ -3635,6 +4010,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 if self.require_permission("sales") is None:
                     return
                 self.handle_sales_upload_request()
+                return
+            if path == "/sales/tester/upload":
+                if self.require_permission("sales") is None:
+                    return
+                self.handle_tester_upload_request()
                 return
             if path == "/sales/save":
                 if self.require_permission("sales") is None:
@@ -3677,6 +4057,33 @@ class BonnieHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_html(self.page(build_message("err", f"처리 중 오류가 났습니다: {exc}")), status=500)
 
+    def handle_tester_upload_request(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
+        try:
+            upload_items = form["tester_files"] if "tester_files" in form else []
+            if not isinstance(upload_items, list):
+                upload_items = [upload_items]
+            files = []
+            for item in upload_items:
+                filename = safe_name(getattr(item, "filename", ""))
+                if not filename:
+                    continue
+                if filename.startswith("~$") or not filename.lower().endswith(".xlsx"):
+                    raise ValueError("체험단 자료는 .xlsx 파일만 올려주세요.")
+                files.append((filename, item.file.read()))
+            if not files:
+                raise ValueError("체험단 엑셀 파일을 선택해주세요.")
+            count, months = save_uploaded_tester_files(files)
+            message = f'체험단 원본 {count}개를 저장하고 {", ".join(months)} 체험단 금액에 자동 반영했습니다.'
+            self.send_html(self.decorate_page(render_sales_page(build_message("ok", message))))
+        except Exception as exc:
+            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 저장 중 오류가 났습니다: {exc}"))), status=500)
+
     def handle_sales_upload_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
         form = cgi.FieldStorage(
@@ -3686,9 +4093,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
         )
         try:
             message, _ = handle_sales_upload(form)
-            self.send_html(render_sales_page(build_message("ok", message)))
+            self.send_html(render_sales_page(build_message("ok", message), folder_mode=True))
         except Exception as exc:
-            self.send_html(render_sales_page(build_message("err", f"매출확인용 저장 중 오류가 났습니다: {exc}")), status=500)
+            self.send_html(render_sales_page(build_message("err", f"월별납품 저장 중 오류가 났습니다: {exc}"), folder_mode=True), status=500)
 
     def handle_check_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
@@ -3720,8 +4127,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
             image_count = 0
             for item in excel_items:
                 name = safe_name(item.filename)
-                if not name.lower().endswith((".xls", ".xlsx")):
-                    raise ValueError("심플웍스 엑셀은 .xls 또는 .xlsx 파일로 올려주세요.")
+                if not name.lower().endswith(".xlsx"):
+                    raise ValueError("심플웍스 엑셀은 .xlsx 파일로 올려주세요.")
                 file_path = work_dir / name
                 file_path.write_bytes(item.file.read())
                 parsed_qty = parse_simpleworks_excel(file_path)
@@ -3763,7 +4170,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
 
     def handle_sales_confirm_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD":"POST","CONTENT_TYPE":content_type})
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
         try:
             user = self.current_user() or {}
             message = save_sales_confirmation_form(form, str(user.get("username", "알 수 없음")))
@@ -3809,6 +4220,19 @@ class BonnieHandler(BaseHTTPRequestHandler):
             self.send_html(self.master_page(build_message("ok", f"저장되었습니다. 변경 {changed}건을 반영했습니다.")))
         except Exception as exc:
             self.send_html(self.master_page(build_message("err", f"저장 중 오류가 났습니다: {exc}")), status=500)
+
+    def handle_growth_incentive_save(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
+        )
+        try:
+            save_growth_incentive_form(form)
+            self.send_html(self.master_page(build_message("ok", "성장장려금 기초자료를 저장했습니다. 연도총매출에 자동 반영됩니다.")))
+        except Exception as exc:
+            self.send_html(self.master_page(build_message("err", f"성장장려금 기초자료 저장 중 오류가 났습니다: {exc}")), status=500)
 
     def handle_master_upload_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
@@ -4006,3 +4430,22 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

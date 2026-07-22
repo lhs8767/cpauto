@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,9 @@ class AuthManager:
         self.anon_key = os.environ.get("SUPABASE_ANON_KEY", "").strip()
         self.service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
         self.local_mode = not (self.supabase_url and self.anon_key and self.service_key)
+        self.local_email = os.environ.get("LOCAL_PREVIEW_EMAIL", "").strip().lower()
+        self.local_password = os.environ.get("LOCAL_PREVIEW_PASSWORD", "")
+        self.local_sessions: set[str] = set()
 
     def _clean_supabase_url(self, value: str) -> str:
         url = value.strip().rstrip("/")
@@ -36,7 +40,11 @@ class AuthManager:
     def login(self, username: str, password: str) -> str | None:
         email = username.strip().lower()
         if self.local_mode:
-            print("[auth] Supabase environment variables are missing", flush=True)
+            if self.local_email and email == self.local_email and secrets.compare_digest(password, self.local_password):
+                token = secrets.token_urlsafe(32)
+                self.local_sessions.add(token)
+                return token
+            print("[auth] Local preview login failed", flush=True)
             return None
         try:
             data = self._request(
@@ -55,11 +63,22 @@ class AuthManager:
             return None
 
     def logout(self, token: str | None) -> None:
+        if token:
+            self.local_sessions.discard(token)
         return
 
     def get_user(self, token: str | None) -> dict[str, object] | None:
-        if not token or self.local_mode:
+        if not token:
             return None
+        if self.local_mode:
+            if token not in self.local_sessions:
+                return None
+            return {
+                "username": self.local_email,
+                "user_id": "local-preview",
+                "permissions": list(PERMISSIONS),
+                "access_token": token,
+            }
         try:
             data = self._request(
                 "GET",
