@@ -20,6 +20,7 @@ from collections import defaultdict
 from datetime import datetime
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -2702,6 +2703,47 @@ def is_simpleworks_child_row(value: object) -> bool:
     return bool(re.match(r"^(?:ㄴ|└|┗|┕|┖|↳|⌞)\s*", text))
 
 
+class SimpleworksHtmlTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self.current_row: list[str] | None = None
+        self.current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        if tag == "tr":
+            self.current_row = []
+        elif tag in {"td", "th"} and self.current_row is not None:
+            self.current_cell = []
+        elif tag == "br" and self.current_cell is not None:
+            self.current_cell.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if self.current_cell is not None:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"} and self.current_row is not None and self.current_cell is not None:
+            self.current_row.append(re.sub(r"\s+", " ", "".join(self.current_cell)).strip())
+            self.current_cell = None
+        elif tag == "tr" and self.current_row is not None:
+            if self.current_row:
+                self.rows.append(self.current_row)
+            self.current_row = None
+
+
+def read_simpleworks_html_rows(raw: bytes) -> list[list[str]]:
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp949", errors="replace")
+    parser = SimpleworksHtmlTableParser()
+    parser.feed(text)
+    return parser.rows
+
+
 def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     master_path = get_saved_master_path()
     if master_path is None:
@@ -2725,9 +2767,14 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
 
 def parse_simpleworks_excel(path: Path) -> dict[str, int]:
     if path.suffix.lower() == ".xls":
-        book = xlrd.open_workbook(path)
-        sheet = book.sheet_by_index(0)
-        rows = [[sheet.cell_value(row, col) for col in range(sheet.ncols)] for row in range(sheet.nrows)]
+        raw = path.read_bytes()
+        prefix = raw.lstrip(b"\xef\xbb\xbf\x00\t\r\n ").lower()
+        if prefix.startswith((b"<table", b"<html", b"<!doctype")):
+            rows = read_simpleworks_html_rows(raw)
+        else:
+            book = xlrd.open_workbook(file_contents=raw)
+            sheet = book.sheet_by_index(0)
+            rows = [[sheet.cell_value(row, col) for col in range(sheet.ncols)] for row in range(sheet.nrows)]
     else:
         wb = load_workbook(path, data_only=True)
         ws = wb.active
