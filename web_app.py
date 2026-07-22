@@ -631,7 +631,7 @@ CHECK_PAGE = """<!DOCTYPE html>
               </div>
               <div style="margin-top:14px;"><button class="btn" type="submit">수량 검수하기</button></div>
             </form>
-            <div class="note">심플웍스에서 다운로드한 원본 엑셀(.xls, .xlsx)을 수정하지 않고 바로 올릴 수 있습니다. 상품명 앞의 `6554 :`, `ㄴ 7468 :` 형식을 심플웍스 No로 읽고 `3개`, `22개` 형식의 수량을 자동 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
+            <div class="note">심플웍스에서 다운로드한 원본 엑셀(.xls, .xlsx)을 수정하지 않고 바로 올릴 수 있습니다. `ㄴ`으로 이어진 구성품이 있으면 위 부모 번호는 제외하고 `ㄴ` 표시 번호만 검수하며, 하위 구성품이 없는 일반 상품은 기존처럼 검수합니다. 같은 번호의 수량은 자동 합산합니다. 캡쳐 이미지는 OCR로 읽기 때문에 엑셀보다 정확도가 낮을 수 있습니다.</div>
           </div>
         </section>
         {result}
@@ -2697,6 +2697,11 @@ def extract_simple_no(values: list[object]) -> str:
     return ""
 
 
+def is_simpleworks_child_row(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(re.match(r"^(?:ㄴ|└|┗|┕|┖|↳|⌞)\s*", text))
+
+
 def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     master_path = get_saved_master_path()
     if master_path is None:
@@ -2742,12 +2747,13 @@ def parse_simpleworks_excel(path: Path) -> dict[str, int]:
         if product_col is not None and qty_col is not None:
             break
 
-    quantities: dict[str, int] = defaultdict(int)
+    candidates: list[tuple[str, int, bool]] = []
     start_row = (header_row + 1) if header_row is not None else 0
     for values in rows[start_row:]:
         if all(value in [None, ""] for value in values):
             continue
-        simple_no = extract_simple_no([values[product_col]] if product_col is not None else values)
+        product_value = values[product_col] if product_col is not None and product_col < len(values) else ""
+        simple_no = extract_simple_no([product_value] if product_col is not None else values)
         if not simple_no:
             continue
         if qty_col is not None and qty_col < len(values):
@@ -2762,7 +2768,14 @@ def parse_simpleworks_excel(path: Path) -> dict[str, int]:
                     qty = int(float(qty_match.group(0).replace(",", ""))) if qty_match else 0
                     break
         if qty > 0:
-            quantities[simple_no] += qty
+            candidates.append((simple_no, qty, is_simpleworks_child_row(product_value)))
+
+    quantities: dict[str, int] = defaultdict(int)
+    for index, (simple_no, qty, is_child) in enumerate(candidates):
+        next_is_child = index + 1 < len(candidates) and candidates[index + 1][2]
+        if not is_child and next_is_child:
+            continue
+        quantities[simple_no] += qty
     return dict(quantities)
 
 
