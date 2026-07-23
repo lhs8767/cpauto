@@ -646,6 +646,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .summary-panel { order:2; }
     .detail-panel { order:3; }
     .year-panel { order:4; }
+    .tester-panel { order:5; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; min-width:0; }
     .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
     .panel-body { padding:18px; }
@@ -2653,17 +2654,29 @@ def render_tester_files() -> str:
     items = load_tester_files_meta()
     if not items:
         return '<div style="color:#667085;font-size:13px;">저장된 체험단 원본 파일이 없습니다.</div>'
-    rows = []
-    for item in sorted(items, key=lambda value: (str(value.get("month", "")), str(value.get("name", ""))), reverse=True):
-        file_id = urllib.parse.quote(str(item.get("id", "")))
-        rows.append(
-            '<div style="display:grid;grid-template-columns:90px 1fr 150px 90px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
-            f'<strong>{html.escape(str(item.get("month", "")))}</strong>'
-            f'<span>{html.escape(str(item.get("name", "")))}</span>'
-            f'<span style="text-align:right;font-weight:800;">{int(item.get("amount", 0)):,}원</span>'
-            f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a></div>'
+    by_month: dict[str, list[dict[str, object]]] = {}
+    for item in items:
+        by_month.setdefault(str(item.get("month", "")), []).append(item)
+    folders = []
+    for month in sorted(by_month, reverse=True):
+        month_items = sorted(by_month[month], key=lambda value: str(value.get("name", "")))
+        month_total = sum(int(item.get("amount", 0)) for item in month_items)
+        rows = []
+        for item in month_items:
+            file_id = urllib.parse.quote(str(item.get("id", "")))
+            rows.append(
+                '<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px 90px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
+                f'<span>{html.escape(str(item.get("name", "")))}</span>'
+                f'<span style="text-align:right;font-weight:800;">{int(item.get("amount", 0)):,}원</span>'
+                f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a></div>'
+            )
+        folders.append(
+            '<details style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
+            '<summary style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 13px;background:#eef5fb;color:#173f68;cursor:pointer;font-size:14px;font-weight:900;">'
+            f'<span>{html.escape(month)} 체험단</span><span>{month_total:,}원 · {len(month_items)}개</span></summary>'
+            + "".join(rows) + "</details>"
         )
-    return '<div style="border:1px solid #e0e6ef;border-radius:9px;overflow:hidden;">' + "".join(rows) + "</div>"
+    return '<div style="display:grid;gap:8px;">' + "".join(folders) + "</div>"
 
 
 def load_year_manual() -> dict:
@@ -2941,8 +2954,8 @@ def render_confirmation_panel(month: str, sales_amount: int) -> str:
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     if folder_mode:
-        summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=True)
-        _po_summary_rows, po_detail_rows = load_monthly_sales_summary(aggregate_by_sku=False)
+        summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
+        _po_summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
     else:
         summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=True)
         po_detail_rows = []
