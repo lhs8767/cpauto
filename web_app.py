@@ -710,6 +710,15 @@ SALES_PAGE = """<!DOCTYPE html>
     .lookup-row { display:grid; grid-template-columns:repeat(5, minmax(120px, 1fr)); gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
     .lookup-row label { display:flex; flex-direction:column; gap:5px; color:#475467; font-size:12px; font-weight:700; }
     .lookup-row input, .lookup-row select { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:8px 9px; font:inherit; background:#fff; }
+    input[type="date"].date-empty::-webkit-datetime-edit { color:transparent; }
+    .folder-year-filter { margin-top:18px; padding:12px 14px; border:1px solid #cbd9e8; border-radius:8px; background:#eef5fb; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .folder-year-filter label { color:#173f68; font-size:13px; font-weight:900; }
+    .folder-year-filter select { min-width:120px; border:1px solid #9fb2c8; border-radius:7px; padding:8px 10px; background:#fff; color:#173f68; font:inherit; font-weight:800; }
+    .folder-month-tabs { flex:1 1 620px; display:grid; grid-template-columns:repeat(12,minmax(48px,1fr)); gap:5px; }
+    .folder-month-tab { border:1px solid #b9c9da; border-radius:6px; padding:7px 4px; background:#fff; color:#667085; font-size:12px; font-weight:800; cursor:pointer; }
+    .folder-month-tab.has-data { color:#173f68; background:#f8fbff; }
+    .folder-month-tab.is-active { border-color:#1f5d8f; background:#1f5d8f; color:#fff; box-shadow:0 3px 8px rgba(31,93,143,.2); }
+    .folder-month-tab:not(.has-data) { opacity:.45; cursor:default; }
     .lookup-row .lookup-reset { align-self:end; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; }
     .detail-result-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
     .detail-result-summary { display:flex; align-items:center; gap:18px; flex-wrap:wrap; color:#1f4e79; font-size:13px; font-weight:800; }
@@ -731,7 +740,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:2; }
     .col-resizer:hover, .col-resizer.active { background:rgba(31,78,121,.22); }
     .scroll { max-height:520px; overflow:auto; }
-    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} }
+    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} .folder-month-tabs{grid-template-columns:repeat(6,minmax(46px,1fr));} }
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
@@ -1051,6 +1060,9 @@ SALES_PAGE = """<!DOCTYPE html>
         detailKeyword = selectedPo.toLowerCase();
         keywordLooksPo = true;
       }
+      var folderYearSelect = document.getElementById("folder-year-select");
+      var selectedFolderYear = folderYearSelect?.value || "";
+      var selectedFolderMonth = folderYearSelect?.dataset.selectedMonth || "";
       var visibleByDay = {};
       var visibleByMonth = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
@@ -1060,7 +1072,8 @@ SALES_PAGE = """<!DOCTYPE html>
         var allowPoMonth = detailViewMode !== "po" || (row.dataset.month || "") >= "2026-07";
         var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
         var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
-        var show = rowMode === detailViewMode && allowPoMonth && poMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
+        var periodMatched = !selectedFolderMonth || (row.dataset.month || "") === selectedFolderMonth;
+        var show = rowMode === detailViewMode && allowPoMonth && poMatched && periodMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
         var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
         var poCell = row.querySelector(".po-cell");
         if (poCell) poCell.textContent = displayPo || (poCell.dataset.originalPo || poCell.textContent);
@@ -1173,8 +1186,72 @@ SALES_PAGE = """<!DOCTYPE html>
       form.querySelector('input[name="override_reason"]').value = reason.trim();
       return true;
     }
+    function syncBlankDateInputs() {
+      document.querySelectorAll('input[type="date"]').forEach(function(input) {
+        function sync() { input.classList.toggle("date-empty", !input.value); }
+        sync();
+        input.addEventListener("input", sync);
+        input.addEventListener("change", sync);
+      });
+    }
+    function applyFolderYearFilter() {
+      var select = document.getElementById("folder-year-select");
+      if (!select) return;
+      var month = select.dataset.selectedMonth || "";
+      document.querySelectorAll(".summary-month-section[data-month], .tester-panel details[data-month]").forEach(function(node) {
+        node.style.display = !month || (node.dataset.month || "") === month ? "" : "none";
+      });
+      applyLookups();
+    }
+    function renderFolderMonthTabs(resetMonth) {
+      var select = document.getElementById("folder-year-select");
+      var container = document.getElementById("folder-month-tabs");
+      if (!select || !container) return;
+      var year = select.value;
+      var available = new Set();
+      document.querySelectorAll(".summary-month-section[data-month], .month-folder[data-month], .tester-panel details[data-month]").forEach(function(node) {
+        var month = node.dataset.month || "";
+        if (month.startsWith(year + "-")) available.add(month);
+      });
+      var current = resetMonth ? "" : (select.dataset.selectedMonth || "");
+      if (!available.has(current)) current = Array.from(available).sort().reverse()[0] || "";
+      select.dataset.selectedMonth = current;
+      container.innerHTML = "";
+      for (var number = 1; number <= 12; number++) {
+        var month = year + "-" + String(number).padStart(2, "0");
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "folder-month-tab" + (available.has(month) ? " has-data" : "") + (month === current ? " is-active" : "");
+        button.textContent = number + "월";
+        button.disabled = !available.has(month);
+        button.dataset.month = month;
+        button.addEventListener("click", function() {
+          select.dataset.selectedMonth = this.dataset.month;
+          renderFolderMonthTabs(false);
+          applyFolderYearFilter();
+        });
+        container.appendChild(button);
+      }
+    }
+    function initFolderYearFilter() {
+      var select = document.getElementById("folder-year-select");
+      if (!select) return;
+      var years = new Set();
+      document.querySelectorAll("[data-month]").forEach(function(node) {
+        var month = node.dataset.month || "";
+        if (/^\\d{4}-\\d{2}$/.test(month)) years.add(month.slice(0, 4));
+      });
+      var sorted = Array.from(years).sort().reverse();
+      select.innerHTML = sorted.map(function(year) { return '<option value="' + year + '">' + year + '년</option>'; }).join("");
+      if (sorted.length) select.value = sorted[0];
+      select.addEventListener("change", function() { renderFolderMonthTabs(true); applyFolderYearFilter(); });
+      renderFolderMonthTabs(true);
+      applyFolderYearFilter();
+    }
     document.addEventListener("DOMContentLoaded", function() {
       initResizableTables();
+      syncBlankDateInputs();
+      initFolderYearFilter();
       document.querySelectorAll(".qty-input, .memo-input").forEach(function(input) {
         input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
       });
@@ -1245,6 +1322,11 @@ SALES_PAGE = """<!DOCTYPE html>
       <h1>{page_title}</h1>
       <div class="sub">{page_sub}</div>
       {message}
+      <div class="folder-year-filter {folder_filter_class}">
+        <label for="folder-year-select">표시 연도</label>
+        <select id="folder-year-select" aria-label="표시 연도"></select>
+        <div id="folder-month-tabs" class="folder-month-tabs" aria-label="표시 월"></div>
+      </div>
       <div class="cards">
         <section class="panel year-panel {year_section_class}">
           <div class="panel-head">
@@ -2671,7 +2753,7 @@ def render_tester_files() -> str:
                 f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a></div>'
             )
         folders.append(
-            '<details style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
+            f'<details data-month="{html.escape(month, quote=True)}" style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
             '<summary style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 13px;background:#eef5fb;color:#173f68;cursor:pointer;font-size:14px;font-weight:900;">'
             f'<span>{html.escape(month)} 체험단</span><span>{month_total:,}원 · {len(month_items)}개</span></summary>'
             + "".join(rows) + "</details>"
@@ -3094,6 +3176,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{current_month}", current_month)
         .replace("{sales_active}", "active" if not folder_mode else "")
         .replace("{folders_active}", "active" if folder_mode else "")
+        .replace("{folder_filter_class}", "" if folder_mode else "not-shown")
         .replace("{year_section_class}", "not-shown" if folder_mode else "")
         .replace("{upload_section_class}", "" if folder_mode else "not-shown")
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
