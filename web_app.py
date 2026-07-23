@@ -1250,7 +1250,7 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function initFolderYearFilter() {
       var select = document.getElementById("folder-year-select");
-      if (!select) return;
+      if (!select || select.closest(".not-shown")) return;
       var years = new Set();
       document.querySelectorAll("[data-month]").forEach(function(node) {
         var month = node.dataset.month || "";
