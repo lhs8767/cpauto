@@ -725,11 +725,6 @@ SALES_PAGE = """<!DOCTYPE html>
     .folder-year-filter { width:max-content; max-width:100%; margin-top:18px; padding:10px 12px; border:1px solid #cbd9e8; border-radius:8px; background:#eef5fb; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .folder-year-filter label { color:#173f68; font-size:13px; font-weight:900; }
     .folder-year-filter select { min-width:120px; border:1px solid #9fb2c8; border-radius:7px; padding:8px 10px; background:#fff; color:#173f68; font:inherit; font-weight:800; }
-    .folder-month-tabs { flex:0 0 auto; display:grid; grid-template-columns:repeat(12,52px); gap:4px; }
-    .folder-month-tab { border:1px solid #b9c9da; border-radius:6px; padding:7px 2px; background:#fff; color:#667085; font-size:12px; font-weight:800; cursor:pointer; }
-    .folder-month-tab.has-data { color:#173f68; background:#f8fbff; }
-    .folder-month-tab.is-active { border-color:#1f5d8f; background:#1f5d8f; color:#fff; box-shadow:0 3px 8px rgba(31,93,143,.2); }
-    .folder-month-tab:not(.has-data) { opacity:.45; cursor:default; }
     .lookup-row .lookup-reset { align-self:end; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; }
     .detail-result-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
     .detail-result-summary { display:flex; align-items:center; gap:18px; flex-wrap:wrap; color:#1f4e79; font-size:13px; font-weight:800; }
@@ -751,7 +746,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:2; }
     .col-resizer:hover, .col-resizer.active { background:rgba(31,78,121,.22); }
     .scroll { max-height:520px; overflow:auto; }
-    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} .folder-year-filter{width:100%;} .folder-month-tabs{grid-template-columns:repeat(6,48px);} }
+    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} .folder-year-filter{width:100%;} }
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
@@ -1014,7 +1009,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var summaryTo = document.getElementById("summary-to")?.value || "";
       document.querySelectorAll(".summary-month-section").forEach(function(section) {
         var sectionMonth = section.dataset.month || "";
-        var folderMonthMatched = !selectedFolderMonth || sectionMonth === selectedFolderMonth;
+        var folderMonthMatched = !!selectedFolderMonth && sectionMonth === selectedFolderMonth;
         var monthSummary = { po: 0, qty: 0, amount: 0, invoice: 0, rows: 0 };
         section.querySelectorAll(".summary-row").forEach(function(row) {
           var show = folderMonthMatched && (!summaryMonth || sectionMonth === summaryMonth) && inDateRange(row.dataset.day, summaryFrom, summaryTo);
@@ -1087,7 +1082,8 @@ SALES_PAGE = """<!DOCTYPE html>
         var allowPoMonth = detailViewMode !== "po" || (row.dataset.month || "") >= "2026-07";
         var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
         var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
-        var periodMatched = !selectedFolderMonth || (row.dataset.month || "") === selectedFolderMonth;
+        var rowMonth = row.dataset.month || "";
+        var periodMatched = !!selectedFolderMonth && rowMonth === selectedFolderMonth;
         var show = rowMode === detailViewMode && allowPoMonth && poMatched && periodMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
         var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
         var poCell = row.querySelector(".po-cell");
@@ -1209,44 +1205,62 @@ SALES_PAGE = """<!DOCTYPE html>
         input.addEventListener("change", sync);
       });
     }
+    function initTesterCommaInputs() {
+      document.querySelectorAll(".tester-input").forEach(function(input) {
+        function format() {
+          var digits = String(input.value || "").replace(/[^0-9]/g, "");
+          input.value = digits ? Number(digits).toLocaleString("ko-KR") : "";
+        }
+        format();
+        input.addEventListener("input", function() { format(); recalcYearScreen(); });
+      });
+    }
     function applyFolderYearFilter() {
       var select = document.getElementById("folder-year-select");
       if (!select) return;
+      var year = select.value;
       var month = select.dataset.selectedMonth || "";
       document.querySelectorAll(".summary-month-section[data-month], .tester-panel details[data-month]").forEach(function(node) {
-        node.style.display = !month || (node.dataset.month || "") === month ? "" : "none";
+        var nodeMonth = node.dataset.month || "";
+        var show = !!month && nodeMonth === month;
+        node.style.display = show ? "" : "none";
       });
+      var testerMatched = Array.from(document.querySelectorAll(".tester-panel details[data-month]")).some(function(node) {
+        return node.dataset.month === month;
+      });
+      var testerEmpty = document.getElementById("tester-month-empty");
+      if (testerEmpty) {
+        testerEmpty.textContent = month ? month + " 체험단 자료가 없습니다." : "월을 선택해 주세요.";
+        testerEmpty.style.display = testerMatched ? "none" : "block";
+      }
+      var deleteMonthInput = document.querySelector('.detail-panel input[name="delete_month"]');
+      if (deleteMonthInput) deleteMonthInput.value = month;
       applyLookups();
     }
     function renderFolderMonthTabs(resetMonth) {
       var select = document.getElementById("folder-year-select");
-      var container = document.getElementById("folder-month-tabs");
-      if (!select || !container) return;
+      var monthSelect = document.getElementById("folder-month-select");
+      if (!select || !monthSelect) return;
       var year = select.value;
       var available = new Set();
       document.querySelectorAll(".summary-month-section[data-month], .month-folder[data-month], .tester-panel details[data-month]").forEach(function(node) {
         var month = node.dataset.month || "";
         if (month.startsWith(year + "-")) available.add(month);
       });
-      var current = resetMonth ? "" : (select.dataset.selectedMonth || "");
-      if (!available.has(current)) current = Array.from(available).sort().reverse()[0] || "";
+      var availableMonths = Array.from(available).sort();
+      var current = resetMonth ? (availableMonths[availableMonths.length - 1] || "") : (select.dataset.selectedMonth || "");
+      if (!current || !available.has(current)) current = availableMonths[availableMonths.length - 1] || "";
       select.dataset.selectedMonth = current;
-      container.innerHTML = "";
+      monthSelect.innerHTML = "";
       for (var number = 1; number <= 12; number++) {
         var month = year + "-" + String(number).padStart(2, "0");
-        var button = document.createElement("button");
-        button.type = "button";
-        button.className = "folder-month-tab" + (available.has(month) ? " has-data" : "") + (month === current ? " is-active" : "");
-        button.textContent = number + "월";
-        button.disabled = !available.has(month);
-        button.dataset.month = month;
-        button.addEventListener("click", function() {
-          select.dataset.selectedMonth = this.dataset.month;
-          renderFolderMonthTabs(false);
-          applyFolderYearFilter();
-        });
-        container.appendChild(button);
+        var option = document.createElement("option");
+        option.value = month;
+        option.textContent = number + "월";
+        option.disabled = !available.has(month);
+        monthSelect.appendChild(option);
       }
+      monthSelect.value = current;
     }
     function initFolderYearFilter() {
       var select = document.getElementById("folder-year-select");
@@ -1260,12 +1274,17 @@ SALES_PAGE = """<!DOCTYPE html>
       select.innerHTML = sorted.map(function(year) { return '<option value="' + year + '">' + year + '년</option>'; }).join("");
       if (sorted.length) select.value = sorted[0];
       select.addEventListener("change", function() { renderFolderMonthTabs(true); applyFolderYearFilter(); });
+      document.getElementById("folder-month-select")?.addEventListener("change", function() {
+        select.dataset.selectedMonth = this.value;
+        applyFolderYearFilter();
+      });
       renderFolderMonthTabs(true);
       applyFolderYearFilter();
     }
     document.addEventListener("DOMContentLoaded", function() {
       initResizableTables();
       syncBlankDateInputs();
+      initTesterCommaInputs();
       initFolderYearFilter();
       document.querySelectorAll(".qty-input, .memo-input").forEach(function(input) {
         input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
@@ -1340,7 +1359,8 @@ SALES_PAGE = """<!DOCTYPE html>
       <div class="folder-year-filter {folder_filter_class}">
         <label for="folder-year-select">표시 연도</label>
         <select id="folder-year-select" aria-label="표시 연도"></select>
-        <div id="folder-month-tabs" class="folder-month-tabs" aria-label="표시 월"></div>
+        <label for="folder-month-select">표시 월</label>
+        <select id="folder-month-select" aria-label="표시 월"></select>
       </div>
       <div class="cards">
         <section class="panel year-panel {year_section_class}">
@@ -1399,6 +1419,7 @@ SALES_PAGE = """<!DOCTYPE html>
               <button class="btn" type="submit">체험단 엑셀 올리기</button>
             </form>
             <div style="margin-top:9px;color:#667085;font-size:12px;">파일명에서 연·월을 확인하고 ‘총 진행 금액’을 체험단 비용에 자동 반영합니다. 자동 반영 후 위 연도총매출 표에서 금액을 수기로 고쳐 저장할 수도 있습니다.</div>
+            <div id="tester-month-empty" style="display:none;margin-top:14px;padding:12px;border:1px dashed #cbd9e8;border-radius:8px;background:#f8fbff;color:#667085;font-size:13px;"></div>
             <div style="margin-top:14px;">{tester_files}</div>
           </div>
         </section>
