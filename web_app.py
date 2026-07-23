@@ -711,11 +711,11 @@ SALES_PAGE = """<!DOCTYPE html>
     .lookup-row label { display:flex; flex-direction:column; gap:5px; color:#475467; font-size:12px; font-weight:700; }
     .lookup-row input, .lookup-row select { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:8px 9px; font:inherit; background:#fff; }
     input[type="date"].date-empty::-webkit-datetime-edit { color:transparent; }
-    .folder-year-filter { margin-top:18px; padding:12px 14px; border:1px solid #cbd9e8; border-radius:8px; background:#eef5fb; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .folder-year-filter { width:max-content; max-width:100%; margin-top:18px; padding:10px 12px; border:1px solid #cbd9e8; border-radius:8px; background:#eef5fb; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .folder-year-filter label { color:#173f68; font-size:13px; font-weight:900; }
     .folder-year-filter select { min-width:120px; border:1px solid #9fb2c8; border-radius:7px; padding:8px 10px; background:#fff; color:#173f68; font:inherit; font-weight:800; }
-    .folder-month-tabs { flex:1 1 620px; display:grid; grid-template-columns:repeat(12,minmax(48px,1fr)); gap:5px; }
-    .folder-month-tab { border:1px solid #b9c9da; border-radius:6px; padding:7px 4px; background:#fff; color:#667085; font-size:12px; font-weight:800; cursor:pointer; }
+    .folder-month-tabs { flex:0 0 auto; display:grid; grid-template-columns:repeat(12,52px); gap:4px; }
+    .folder-month-tab { border:1px solid #b9c9da; border-radius:6px; padding:7px 2px; background:#fff; color:#667085; font-size:12px; font-weight:800; cursor:pointer; }
     .folder-month-tab.has-data { color:#173f68; background:#f8fbff; }
     .folder-month-tab.is-active { border-color:#1f5d8f; background:#1f5d8f; color:#fff; box-shadow:0 3px 8px rgba(31,93,143,.2); }
     .folder-month-tab:not(.has-data) { opacity:.45; cursor:default; }
@@ -740,7 +740,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:2; }
     .col-resizer:hover, .col-resizer.active { background:rgba(31,78,121,.22); }
     .scroll { max-height:520px; overflow:auto; }
-    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} .folder-month-tabs{grid-template-columns:repeat(6,minmax(46px,1fr));} }
+    @media (max-width:880px) { .app{grid-template-columns:1fr;} .side{display:none;} .main{padding:18px;} table{font-size:12px;} th,td{padding:8px 7px;} .lookup-row{grid-template-columns:1fr 1fr;} .folder-year-filter{width:100%;} .folder-month-tabs{grid-template-columns:repeat(6,48px);} }
   </style>
   <script>
     function showComingSoon(name) { alert(name + " 메뉴는 아직 준비 중입니다."); }
