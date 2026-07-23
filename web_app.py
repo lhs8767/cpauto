@@ -991,6 +991,9 @@ SALES_PAGE = """<!DOCTYPE html>
     }
     function applyLookups() {
       var yearMonth = document.getElementById("year-month-lookup")?.value || "";
+      var folderYearSelect = document.getElementById("folder-year-select");
+      var selectedFolderYear = folderYearSelect?.value || "";
+      var selectedFolderMonth = folderYearSelect?.dataset.selectedMonth || "";
       document.querySelectorAll(".year-row").forEach(function(row) {
         row.style.display = !yearMonth || row.dataset.month === yearMonth ? "" : "none";
       });
@@ -1000,9 +1003,10 @@ SALES_PAGE = """<!DOCTYPE html>
       var summaryTo = document.getElementById("summary-to")?.value || "";
       document.querySelectorAll(".summary-month-section").forEach(function(section) {
         var sectionMonth = section.dataset.month || "";
+        var folderMonthMatched = !selectedFolderMonth || sectionMonth === selectedFolderMonth;
         var monthSummary = { po: 0, qty: 0, amount: 0, rows: 0 };
         section.querySelectorAll(".summary-row").forEach(function(row) {
-          var show = (!summaryMonth || sectionMonth === summaryMonth) && inDateRange(row.dataset.day, summaryFrom, summaryTo);
+          var show = folderMonthMatched && (!summaryMonth || sectionMonth === summaryMonth) && inDateRange(row.dataset.day, summaryFrom, summaryTo);
           row.style.display = show ? "" : "none";
           if (show) {
             monthSummary.rows += 1;
@@ -1060,9 +1064,6 @@ SALES_PAGE = """<!DOCTYPE html>
         detailKeyword = selectedPo.toLowerCase();
         keywordLooksPo = true;
       }
-      var folderYearSelect = document.getElementById("folder-year-select");
-      var selectedFolderYear = folderYearSelect?.value || "";
-      var selectedFolderMonth = folderYearSelect?.dataset.selectedMonth || "";
       var visibleByDay = {};
       var visibleByMonth = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
