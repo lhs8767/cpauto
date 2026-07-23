@@ -3087,7 +3087,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         _po_summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
     else:
-        summary_rows, detail_rows = load_monthly_sales_summary(aggregate_by_sku=True)
+        summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         po_detail_rows = []
     current_month = datetime.now().strftime("%Y-%m")
     visible_detail_rows = detail_rows if folder_mode else [
