@@ -609,7 +609,7 @@ CHECK_PAGE = """<!DOCTYPE html>
                   <input type="date" name="date_to" value="{date_to}">
                 </label>
                 <label>심플웍스 엑셀
-                  <input type="file" name="simpleworks_file" accept=".xlsx" multiple>
+                  <input type="file" name="simpleworks_file" accept=".xls,.xlsx" multiple>
                 </label>
                 <label>심플웍스 캡쳐 이미지
                   <input type="file" name="simpleworks_image" accept=".png,.jpg,.jpeg,.bmp,.webp" multiple>
@@ -3300,7 +3300,64 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
     return sku_to_simple, simple_to_info
 
 
+def parse_simpleworks_html_excel(path: Path) -> dict[str, int]:
+    raw = path.read_bytes()
+    text = ""
+    for encoding in ("utf-8-sig", "cp949", "euc-kr"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text:
+        raise ValueError("심플웍스 .xls 파일의 글자를 읽지 못했습니다.")
+
+    table_rows: list[list[str]] = []
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", text, flags=re.I | re.S):
+        cells = []
+        for cell_html in re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.I | re.S):
+            cell_text = re.sub(r"<[^>]+>", " ", cell_html)
+            cells.append(re.sub(r"\s+", " ", html.unescape(cell_text)).strip())
+        if cells:
+            table_rows.append(cells)
+
+    if not table_rows:
+        raise ValueError("심플웍스 .xls 파일에서 표를 찾지 못했습니다.")
+
+    header_index = 0
+    product_col = None
+    qty_col = None
+    for row_index, values in enumerate(table_rows[:30]):
+        for col, value in enumerate(values):
+            header = norm_header(value)
+            if header in ["상품명", "상품"]:
+                product_col = col
+                header_index = row_index
+            if header == "수량":
+                qty_col = col
+                header_index = row_index
+        if product_col is not None and qty_col is not None:
+            break
+
+    quantities: dict[str, int] = defaultdict(int)
+    for values in table_rows[header_index + 1:]:
+        simple_no = extract_simple_no(values)
+        if not simple_no:
+            continue
+        qty = 0
+        if qty_col is not None and qty_col < len(values):
+            qty_match = re.search(r"-?\d[\d,]*", values[qty_col])
+            if qty_match:
+                qty = parse_int(qty_match.group(0))
+        if qty > 0:
+            quantities[simple_no] += qty
+    return dict(quantities)
+
+
 def parse_simpleworks_excel(path: Path) -> dict[str, int]:
+    raw_head = path.read_bytes()[:256].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if path.suffix.lower() == ".xls" or raw_head.startswith((b"<table", b"<html", b"<!doctype")):
+        return parse_simpleworks_html_excel(path)
     wb = load_workbook(path, data_only=True)
     ws = wb.active
     header_row = None
@@ -4295,8 +4352,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
             image_count = 0
             for item in excel_items:
                 name = safe_name(item.filename)
-                if not name.lower().endswith(".xlsx"):
-                    raise ValueError("심플웍스 엑셀은 .xlsx 파일로 올려주세요.")
+                if not name.lower().endswith((".xls", ".xlsx")):
+                    raise ValueError("심플웍스 엑셀은 .xls 또는 .xlsx 파일로 올려주세요.")
                 file_path = work_dir / name
                 file_path.write_bytes(item.file.read())
                 parsed_qty = parse_simpleworks_excel(file_path)
