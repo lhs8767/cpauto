@@ -2769,6 +2769,32 @@ def save_uploaded_tester_files(items: list[tuple[str, bytes]]) -> tuple[int, lis
     return len(items), sorted(affected_months)
 
 
+def delete_tester_file(file_id: str) -> str:
+    metadata = load_tester_files_meta()
+    item = next((value for value in metadata if str(value.get("id", "")) == file_id), None)
+    if item is None:
+        raise ValueError("삭제할 체험단 원본 파일을 찾지 못했습니다.")
+
+    month = str(item.get("month", ""))
+    stored_path = TESTER_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+    stored_path.unlink(missing_ok=True)
+    file_key = str(item.get("file_key", ""))
+    if file_key:
+        supabase_request(
+            "DELETE",
+            f"/rest/v1/app_files?file_key=eq.{urllib.parse.quote(file_key)}",
+        )
+
+    remaining = [value for value in metadata if str(value.get("id", "")) != file_id]
+    save_tester_files_meta(remaining)
+    manual = load_year_manual()
+    manual.setdefault(month, {})["tester"] = str(
+        sum(int(value.get("amount", 0)) for value in remaining if str(value.get("month", "")) == month)
+    )
+    save_year_manual_data(manual)
+    return str(item.get("name", "체험단 원본"))
+
+
 def render_tester_files() -> str:
     items = load_tester_files_meta()
     if not items:
@@ -2784,10 +2810,13 @@ def render_tester_files() -> str:
         for item in month_items:
             file_id = urllib.parse.quote(str(item.get("id", "")))
             rows.append(
-                '<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px 90px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
+                '<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px 90px 70px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
                 f'<span>{html.escape(str(item.get("name", "")))}</span>'
                 f'<span style="text-align:right;font-weight:800;">{int(item.get("amount", 0)):,}원</span>'
-                f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a></div>'
+                f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a>'
+                f'<form method="post" action="/sales/tester/delete" onsubmit="return confirm(\'이 체험단 원본과 반영 금액을 삭제할까요?\');">'
+                f'<input type="hidden" name="file_id" value="{file_id}">'
+                '<button class="delete-btn" type="submit">삭제</button></form></div>'
             )
         folders.append(
             f'<details data-month="{html.escape(month, quote=True)}" style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
@@ -4241,6 +4270,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     return
                 self.handle_tester_upload_request()
                 return
+            if path == "/sales/tester/delete":
+                if self.require_permission("sales") is None:
+                    return
+                self.handle_tester_delete_request()
+                return
             if path == "/sales/save":
                 if self.require_permission("sales") is None:
                     return
@@ -4304,10 +4338,17 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if not files:
                 raise ValueError("체험단 엑셀 파일을 선택해주세요.")
             count, months = save_uploaded_tester_files(files)
-            message = f'체험단 원본 {count}개를 저장하고 {", ".join(months)} 체험단 금액에 자동 반영했습니다.'
-            self.send_html(self.decorate_page(render_sales_page(build_message("ok", message))))
+            self.send_redirect("/sales/folders")
         except Exception as exc:
-            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 저장 중 오류가 났습니다: {exc}"))), status=500)
+            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
+
+    def handle_tester_delete_request(self) -> None:
+        form = self.read_urlencoded_form()
+        try:
+            delete_tester_file(form.get("file_id", "").strip())
+            self.send_redirect("/sales/folders")
+        except Exception as exc:
+            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 삭제 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
     def handle_sales_upload_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
@@ -4318,9 +4359,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
         )
         try:
             message, _ = handle_sales_upload(form)
-            self.send_html(render_sales_page(build_message("ok", message), folder_mode=True))
+            self.send_redirect("/sales/folders")
         except Exception as exc:
-            self.send_html(render_sales_page(build_message("err", f"월별납품 저장 중 오류가 났습니다: {exc}"), folder_mode=True), status=500)
+            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"월별납품 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
     def handle_check_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
