@@ -1000,6 +1000,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var folderYearSelect = document.getElementById("folder-year-select");
       var selectedFolderYear = folderYearSelect?.value || "";
       var selectedFolderMonth = folderYearSelect?.dataset.selectedMonth || "";
+      var folderFilterActive = !!folderYearSelect && !folderYearSelect.closest(".not-shown");
       document.querySelectorAll(".year-row").forEach(function(row) {
         row.style.display = !yearMonth || row.dataset.month === yearMonth ? "" : "none";
       });
@@ -1009,7 +1010,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var summaryTo = document.getElementById("summary-to")?.value || "";
       document.querySelectorAll(".summary-month-section").forEach(function(section) {
         var sectionMonth = section.dataset.month || "";
-        var folderMonthMatched = !!selectedFolderMonth && sectionMonth === selectedFolderMonth;
+        var folderMonthMatched = !folderFilterActive || (!!selectedFolderMonth && sectionMonth === selectedFolderMonth);
         var monthSummary = { po: 0, qty: 0, amount: 0, invoice: 0, rows: 0 };
         section.querySelectorAll(".summary-row").forEach(function(row) {
           var show = folderMonthMatched && (!summaryMonth || sectionMonth === summaryMonth) && inDateRange(row.dataset.day, summaryFrom, summaryTo);
@@ -1083,7 +1084,7 @@ SALES_PAGE = """<!DOCTYPE html>
         var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
         var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
         var rowMonth = row.dataset.month || "";
-        var periodMatched = !!selectedFolderMonth && rowMonth === selectedFolderMonth;
+        var periodMatched = !folderFilterActive || (!!selectedFolderMonth && rowMonth === selectedFolderMonth);
         var show = rowMode === detailViewMode && allowPoMonth && poMatched && periodMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
         var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
         var poCell = row.querySelector(".po-cell");
