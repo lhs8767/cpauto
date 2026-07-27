@@ -1118,6 +1118,14 @@ SALES_PAGE = """<!DOCTYPE html>
         row.classList.toggle("view-hidden", rowMode !== detailViewMode);
         row.style.display = visibleByMonth[row.dataset.month + "::" + rowMode] ? "" : "none";
       });
+      var detailMonthEmpty = document.getElementById("detail-month-empty");
+      if (detailMonthEmpty) {
+        var selectedMonthHasData = !!visibleByMonth[selectedFolderMonth + "::" + detailViewMode];
+        detailMonthEmpty.textContent = selectedFolderMonth
+          ? selectedFolderMonth + " 납품자료가 없습니다."
+          : "월을 선택해 주세요.";
+        detailMonthEmpty.style.display = folderFilterActive && !selectedMonthHasData ? "block" : "none";
+      }
       updateDetailResultSummary();
       recalcYearScreen();
     }
@@ -1258,7 +1266,6 @@ SALES_PAGE = """<!DOCTYPE html>
         var option = document.createElement("option");
         option.value = month;
         option.textContent = number + "월";
-        option.disabled = !available.has(month);
         monthSelect.appendChild(option);
       }
       monthSelect.value = current;
@@ -1504,6 +1511,7 @@ SALES_PAGE = """<!DOCTYPE html>
             </div>
             <button class="detail-download" type="button" onclick="downloadDetailResults()">검색결과 엑셀 다운로드</button>
           </div>
+          <div id="detail-month-empty" style="display:none;margin:12px 16px;padding:12px;border:1px dashed #cbd9e8;border-radius:8px;background:#f8fbff;color:#667085;font-size:13px;"></div>
           <form method="post" action="/sales/save" onsubmit="return prepareSalesSave(this)">
           <input type="hidden" name="override_reason" value="">
           <div id="detail-save-row" class="save-row"><button class="btn" type="submit">수량/메모 저장</button></div><div id="mode-note" class="mode-note"><strong>보기방식 안내</strong>SKU 합계는 확인용이며, 저장/수정/삭제는 PO별 상세에서만 가능합니다.</div>
