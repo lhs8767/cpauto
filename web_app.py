@@ -812,12 +812,13 @@ SALES_PAGE = """<!DOCTYPE html>
     .money-input { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; font:inherit; background:#fff; text-align:right; }
     .qty-input { text-align:right; min-width:64px; }
     .memo-input { min-width:120px; }
-    .locked-price-wrap { min-width:112px; }
-    .locked-price-input { width:100%; border:1px solid #d4dce8; border-radius:6px; padding:7px 8px; text-align:right; background:#eef2f7; color:#344054; font:inherit; }
+    .locked-price-wrap { min-width:90px; display:grid; grid-template-columns:minmax(58px, 1fr) 24px; gap:3px; align-items:center; }
+    .locked-price-input { width:100%; border:1px solid transparent; border-radius:5px; padding:5px 3px; text-align:right; background:transparent; color:#344054; font:inherit; }
     .locked-price-input.is-unlocked { background:#fff8e8; border-color:#e2a93b; color:#172033; }
-    .price-request-btn { margin-top:4px; border:1px solid #b9c6d8; border-radius:6px; padding:4px 7px; background:#fff; color:#1f4e79; font-size:10px; font-weight:800; cursor:pointer; }
+    .price-request-btn { width:24px; height:24px; border:1px solid transparent; border-radius:5px; padding:0; background:transparent; color:#667085; font-size:13px; font-weight:800; cursor:pointer; line-height:22px; }
+    .price-request-btn:hover { border-color:#b9c6d8; background:#f8fafc; color:#1f4e79; }
     .price-request-btn.is-approved { border-color:#98d6b7; background:#ecfdf3; color:#027a48; }
-    .price-audit { margin-top:4px; font-size:10px; color:#667085; }
+    .price-audit { grid-column:1 / -1; margin-top:2px; font-size:10px; color:#667085; }
     .price-audit summary { cursor:pointer; color:#1f4e79; font-weight:800; }
     .price-audit div { margin-top:3px; line-height:1.35; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
@@ -1330,7 +1331,8 @@ SALES_PAGE = """<!DOCTYPE html>
       input.classList.add("is-unlocked");
       input.focus();
       input.select();
-      button.textContent = "수정 승인됨";
+      button.textContent = "✓";
+      button.title = "단가 수정 승인됨";
       button.classList.add("is-approved");
     }
     function syncBlankDateInputs() {
@@ -3453,7 +3455,7 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
         f'<div class="locked-price-wrap"><input class="locked-price-input" name="price_{row_no}" '
         f'value="{unit_price}" inputmode="numeric" readonly>'
         f'<input class="price-approved-marker" type="hidden" name="price_approved_{row_no}" value="0">'
-        f'<button class="price-request-btn" type="button" onclick="requestPriceEdit(this)">단가 수정 요청</button>'
+        f'<button class="price-request-btn" type="button" onclick="requestPriceEdit(this)" title="단가 수정 요청" aria-label="단가 수정 요청">✎</button>'
         f'{history_html}</div>'
     )
 
