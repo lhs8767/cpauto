@@ -1151,6 +1151,20 @@ SALES_PAGE = """<!DOCTYPE html>
 
       var detailFrom = document.getElementById("detail-from")?.value || "";
       var detailTo = document.getElementById("detail-to")?.value || "";
+      var detailPanel = document.querySelector(".detail-panel");
+      var defaultDetailMonth = detailPanel?.dataset.defaultMonth || "";
+      var linkedDetailMonth = "";
+      if (!folderFilterActive) {
+        linkedDetailMonth = summaryMonth || ((!summaryFrom && !summaryTo) ? defaultDetailMonth : "");
+        if (!detailFrom && summaryFrom) detailFrom = summaryFrom;
+        if (!detailTo && summaryTo) detailTo = summaryTo;
+        var detailTitle = document.getElementById("detail-panel-title");
+        if (detailTitle) {
+          if (linkedDetailMonth) detailTitle.textContent = linkedDetailMonth + " 납품 상품 내역";
+          else if (detailFrom || detailTo) detailTitle.textContent = (detailFrom || "처음") + " ~ " + (detailTo || "현재") + " 납품 상품 내역";
+          else detailTitle.textContent = "납품 상품 내역";
+        }
+      }
       var detailKeywordNode = document.getElementById("detail-keyword");
       var detailKeyword = (detailKeywordNode?.value || "").trim().toLowerCase();
       var detailPoSelect = document.getElementById("detail-po-select");
@@ -1168,6 +1182,7 @@ SALES_PAGE = """<!DOCTYPE html>
       var selectedPo = (detailPoSelect?.value || "").trim();
       var availablePo = {};
       document.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
+        if (linkedDetailMonth && (row.dataset.month || "") !== linkedDetailMonth) return;
         if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
         getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
       });
@@ -1197,7 +1212,9 @@ SALES_PAGE = """<!DOCTYPE html>
         var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
         var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
         var rowMonth = row.dataset.month || "";
-        var periodMatched = !folderFilterActive || (!!selectedFolderMonth && rowMonth === selectedFolderMonth);
+        var periodMatched = folderFilterActive
+          ? (!!selectedFolderMonth && rowMonth === selectedFolderMonth)
+          : (!linkedDetailMonth || rowMonth === linkedDetailMonth);
         var show = rowMode === detailViewMode && allowPoMonth && poMatched && periodMatched && inDateRange(row.dataset.day, detailFrom, detailTo) && keywordMatched;
         var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
         var poCell = row.querySelector(".po-cell");
@@ -1616,8 +1633,8 @@ SALES_PAGE = """<!DOCTYPE html>
           <div class="summary-months">{summary_rows}</div>
           </div>
         </section>
-        <section class="panel detail-panel">
-          <div class="panel-head">{detail_title}</div>
+        <section class="panel detail-panel" data-default-month="{current_month}">
+          <div class="panel-head"><span id="detail-panel-title">{detail_title}</span></div>
           <div class="lookup-row" data-lookup-group="detail">
             <label>시작일
               <input id="detail-from" type="date">
@@ -2661,7 +2678,7 @@ def find_uploaded_sales_po_files() -> list[Path]:
 def ensure_monthly_sales_book():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     restore_sales_files_from_supabase()
-    headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모", "PO번호"]
+    headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모", "PO번호", "원본발주금액"]
     if SALES_LEDGER_PATH.exists():
         wb = load_workbook(SALES_LEDGER_PATH)
         ws = wb.active
@@ -2705,7 +2722,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             if adjusted_qty or adjusted_memo:
                 existing_adjustments[(day, existing_po, sku)] = (adjusted_qty, adjusted_memo)
         if not (existing_po_numbers & po_numbers):
-            rows_to_keep.append([ws.cell(row, col).value for col in range(1, 13)])
+            rows_to_keep.append([ws.cell(row, col).value for col in range(1, 14)])
 
     ws.delete_rows(2, max(ws.max_row - 1, 0))
     for row_values in rows_to_keep:
@@ -2719,6 +2736,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         "name": "",
         "qty": 0,
         "amount": 0,
+        "source_amount": 0,
         "barcode": "",
     })
     for line in lines:
@@ -2726,7 +2744,8 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         sales_qty = get_sales_qty(line, prefer_inbound)
         day = parse_date(line.inbound_date)
         master_unit_price = price_for_date(sku, master_amounts.get(sku, 0), day, price_history)
-        sales_amount = get_sales_amount(line, prefer_inbound)
+        source_sales_amount = get_sales_amount(line, prefer_inbound)
+        sales_amount = source_sales_amount
         if sales_qty > 0 and price_history.get(sku) and master_unit_price > 0:
             sales_amount = master_unit_price * sales_qty
         elif sales_qty > 0 and sales_amount <= 0:
@@ -2745,6 +2764,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             item["name"] = item["name"] or line.product_name
             item["qty"] += sales_qty
             item["amount"] += sales_amount
+            item["source_amount"] += source_sales_amount
             item["barcode"] = item["barcode"] or line.barcode
 
     saved_count = 0
@@ -2763,6 +2783,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
             adjusted_qty,
             adjusted_memo,
             item["po_no"],
+            item["source_amount"],
         ])
         saved_count += 1
 
@@ -2813,6 +2834,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         name = str(ws.cell(row, 5).value or "")
         original_qty = parse_int(ws.cell(row, 6).value)
         original_amount = parse_int(ws.cell(row, 7).value)
+        source_amount = parse_int(ws.cell(row, 13).value)
         remarks = str(ws.cell(row, 9).value or "")
         row_po_no = str(ws.cell(row, 12).value or "").strip() or ", ".join(split_po_numbers(remarks))
         adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
@@ -2830,6 +2852,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         if edited_unit_price > 0:
             unit_price = edited_unit_price
         amount = unit_price * adjusted_qty
+        amount_mismatch = source_amount > 0 and source_amount != amount
         clean_po_numbers = []
         if not day:
             continue
@@ -2849,7 +2872,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
             amount,
             row_po_no or ", ".join(clean_po_numbers),
             adjusted_memo,
-            adjusted_qty != original_qty or bool(adjusted_memo) or edited_unit_price > 0,
+            adjusted_qty != original_qty or bool(adjusted_memo) or edited_unit_price > 0 or amount_mismatch,
         ])
     if aggregate_by_sku:
         grouped_rows = {}
@@ -3468,9 +3491,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         po_detail_rows = []
     current_month = datetime.now().strftime("%Y-%m")
-    visible_detail_rows = detail_rows if folder_mode else [
-        row for row in detail_rows if str(row[1]).startswith(current_month)
-    ]
+    visible_detail_rows = detail_rows
     visible_po_detail_rows = po_detail_rows if folder_mode else []
     sales_price_edits = load_sales_price_edits()
     if summary_rows:
