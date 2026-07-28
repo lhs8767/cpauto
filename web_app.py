@@ -1258,7 +1258,7 @@ SALES_PAGE = """<!DOCTYPE html>
       });
       var availableMonths = Array.from(available).sort();
       var current = resetMonth ? (availableMonths[availableMonths.length - 1] || "") : (select.dataset.selectedMonth || "");
-      if (!current || !available.has(current)) current = availableMonths[availableMonths.length - 1] || "";
+      if (!current || !current.startsWith(year + "-")) current = availableMonths[availableMonths.length - 1] || (year + "-01");
       select.dataset.selectedMonth = current;
       monthSelect.innerHTML = "";
       for (var number = 1; number <= 12; number++) {
@@ -1280,13 +1280,30 @@ SALES_PAGE = """<!DOCTYPE html>
       });
       var sorted = Array.from(years).sort().reverse();
       select.innerHTML = sorted.map(function(year) { return '<option value="' + year + '">' + year + '년</option>'; }).join("");
-      if (sorted.length) select.value = sorted[0];
-      select.addEventListener("change", function() { renderFolderMonthTabs(true); applyFolderYearFilter(); });
-      document.getElementById("folder-month-select")?.addEventListener("change", function() {
-        select.dataset.selectedMonth = this.value;
+      var requestedMonth = new URLSearchParams(window.location.search).get("month") || "";
+      var requestedYear = /^\\d{4}-\\d{2}$/.test(requestedMonth) ? requestedMonth.slice(0, 4) : "";
+      if (requestedYear && sorted.includes(requestedYear)) select.value = requestedYear;
+      else if (sorted.length) select.value = sorted[0];
+      if (requestedMonth && requestedMonth.startsWith(select.value + "-")) select.dataset.selectedMonth = requestedMonth;
+      function syncFolderMonthUrl() {
+        var month = select.dataset.selectedMonth || "";
+        var url = new URL(window.location.href);
+        if (month) url.searchParams.set("month", month);
+        else url.searchParams.delete("month");
+        window.history.replaceState(null, "", url.pathname + url.search);
+      }
+      select.addEventListener("change", function() {
+        renderFolderMonthTabs(true);
+        syncFolderMonthUrl();
         applyFolderYearFilter();
       });
-      renderFolderMonthTabs(true);
+      document.getElementById("folder-month-select")?.addEventListener("change", function() {
+        select.dataset.selectedMonth = this.value;
+        syncFolderMonthUrl();
+        applyFolderYearFilter();
+      });
+      renderFolderMonthTabs(false);
+      syncFolderMonthUrl();
       applyFolderYearFilter();
     }
     document.addEventListener("DOMContentLoaded", function() {
@@ -3865,10 +3882,11 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
     total_qty = sum(get_sales_qty(line, prefer_inbound) for line in all_lines)
     amount_message = f" 기초자료 금액 {filled_amounts}건도 자동으로 채웠습니다." if filled_amounts else ""
     date_message = describe_sales_date_breakdown(all_lines)
+    uploaded_months = sorted({parse_month(line.inbound_date) for line in all_lines if line.inbound_date})
     return (
         f"매출확인용으로 저장했습니다. PO {file_count}개, 상품 줄 {line_count}개, "
         f"총 수량 {total_qty:,}개, 납품상품 합계금액 {total_amount:,}원입니다.{amount_message}{date_message}"
-    ), None
+    ), (uploaded_months[-1] if uploaded_months else None)
 
 
 def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
@@ -4042,6 +4060,15 @@ class BonnieHandler(BaseHTTPRequestHandler):
         for cookie in cookies or []:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
+
+    def sales_folders_location(self, month: str = "") -> str:
+        selected_month = month.strip()
+        if not re.fullmatch(r"\d{4}-\d{2}", selected_month):
+            referer = self.headers.get("Referer", "")
+            selected_month = parse_qs(urlparse(referer).query).get("month", [""])[-1]
+        if re.fullmatch(r"\d{4}-\d{2}", selected_month):
+            return f"/sales/folders?month={quote(selected_month)}"
+        return "/sales/folders"
 
     def session_cookie(self, token: str) -> str:
         secure = "; Secure" if self.COOKIE_SECURE else ""
@@ -4354,7 +4381,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if not files:
                 raise ValueError("체험단 엑셀 파일을 선택해주세요.")
             count, months = save_uploaded_tester_files(files)
-            self.send_redirect("/sales/folders")
+            self.send_redirect(self.sales_folders_location(months[-1] if months else ""))
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
@@ -4362,7 +4389,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
         form = self.read_urlencoded_form()
         try:
             delete_tester_file(form.get("file_id", "").strip())
-            self.send_redirect("/sales/folders")
+            self.send_redirect(self.sales_folders_location())
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"체험단 자료 삭제 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
@@ -4374,8 +4401,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
             environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
         )
         try:
-            message, _ = handle_sales_upload(form)
-            self.send_redirect("/sales/folders")
+            message, uploaded_month = handle_sales_upload(form)
+            self.send_redirect(self.sales_folders_location(uploaded_month or ""))
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"월별납품 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
@@ -4446,7 +4473,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
         try:
             user = self.current_user() or {}
             changed = save_sales_detail_form(form, str(user.get("username", "알 수 없음")))
-            self.send_html(self.decorate_page(render_sales_page(build_message("ok", f"수량/메모 수정사항 {changed}건을 저장했습니다."), folder_mode=True)))
+            self.send_redirect(self.sales_folders_location())
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"수량/메모 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
 
@@ -4473,14 +4500,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
         )
         try:
             deleted, label = delete_sales_detail_form(form)
-            self.send_html(
-                self.decorate_page(
-                    render_sales_page(
-                        build_message("ok", f"{label} 삭제 완료: {deleted}줄을 삭제했습니다."),
-                        folder_mode=True,
-                    )
-                )
-            )
+            self.send_redirect(self.sales_folders_location())
         except Exception as exc:
             self.send_html(
                 self.decorate_page(
