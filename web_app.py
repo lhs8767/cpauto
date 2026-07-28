@@ -4473,9 +4473,24 @@ class BonnieHandler(BaseHTTPRequestHandler):
         )
         try:
             deleted, label = delete_sales_detail_form(form)
-            self.send_html(render_sales_page(build_message("ok", f"{label} 삭제 완료: {deleted}줄을 삭제했습니다.")))
+            self.send_html(
+                self.decorate_page(
+                    render_sales_page(
+                        build_message("ok", f"{label} 삭제 완료: {deleted}줄을 삭제했습니다."),
+                        folder_mode=True,
+                    )
+                )
+            )
         except Exception as exc:
-            self.send_html(render_sales_page(build_message("err", f"삭제 중 오류가 났습니다: {exc}")), status=500)
+            self.send_html(
+                self.decorate_page(
+                    render_sales_page(
+                        build_message("err", f"삭제 중 오류가 났습니다: {exc}"),
+                        folder_mode=True,
+                    )
+                ),
+                status=500,
+            )
 
     def handle_sales_year_save_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
