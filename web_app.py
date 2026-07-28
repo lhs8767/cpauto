@@ -39,6 +39,7 @@ MONTHLY_SALES_PATH = DATA_DIR / "월매출_납품상품.xlsx"
 SALES_LEDGER_PATH = DATA_DIR / "_월매출_내부자료.xlsx"
 YEAR_MANUAL_PATH = DATA_DIR / "연도총매출_수기입력.json"
 SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
+SALES_PRICE_EDITS_PATH = DATA_DIR / "납품단가_수정이력.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
@@ -122,12 +123,14 @@ def restore_sales_files_from_supabase() -> None:
     restore_file_from_supabase("sales_ledger", SALES_LEDGER_PATH)
     restore_file_from_supabase("monthly_sales", MONTHLY_SALES_PATH)
     restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH)
+    restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
 
 
 def backup_sales_files_to_supabase() -> None:
     backup_file_to_supabase("sales_ledger", SALES_LEDGER_PATH)
     backup_file_to_supabase("monthly_sales", MONTHLY_SALES_PATH)
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
+    backup_file_to_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
 
 
 def load_sales_confirmations() -> dict[str, object]:
@@ -145,6 +148,28 @@ def save_sales_confirmations(data: dict[str, object]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SALES_CONFIRM_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
+
+
+def load_sales_price_edits() -> dict[str, dict[str, object]]:
+    restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
+    if not SALES_PRICE_EDITS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SALES_PRICE_EDITS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_sales_price_edits(data: dict[str, dict[str, object]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SALES_PRICE_EDITS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
+
+
+def sales_price_edit_key(day: object, po_no: object, sku: object) -> str:
+    po_text = ",".join(split_po_numbers(po_no))
+    return f"{str(day).strip()}|{po_text}|{str(sku).strip()}"
 
 
 def sales_confirmation(month: str) -> dict[str, object]:
@@ -787,6 +812,14 @@ SALES_PAGE = """<!DOCTYPE html>
     .money-input { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; font:inherit; background:#fff; text-align:right; }
     .qty-input { text-align:right; min-width:64px; }
     .memo-input { min-width:120px; }
+    .locked-price-wrap { min-width:112px; }
+    .locked-price-input { width:100%; border:1px solid #d4dce8; border-radius:6px; padding:7px 8px; text-align:right; background:#eef2f7; color:#344054; font:inherit; }
+    .locked-price-input.is-unlocked { background:#fff8e8; border-color:#e2a93b; color:#172033; }
+    .price-request-btn { margin-top:4px; border:1px solid #b9c6d8; border-radius:6px; padding:4px 7px; background:#fff; color:#1f4e79; font-size:10px; font-weight:800; cursor:pointer; }
+    .price-request-btn.is-approved { border-color:#98d6b7; background:#ecfdf3; color:#027a48; }
+    .price-audit { margin-top:4px; font-size:10px; color:#667085; }
+    .price-audit summary { cursor:pointer; color:#1f4e79; font-weight:800; }
+    .price-audit div { margin-top:3px; line-height:1.35; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
     .save-row { display:flex; justify-content:flex-end; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
     .year-table th { text-align:center; background:#f8fafc; color:#344054; font-weight:800; }
@@ -894,12 +927,13 @@ SALES_PAGE = """<!DOCTYPE html>
       var cells = row.children;
       var qtyInput = row.querySelector(".qty-input");
       var memoInput = row.querySelector(".memo-input");
+      var priceInput = row.querySelector(".locked-price-input");
       return {
         day: row.dataset.day || "",
         sku: (cells[0]?.textContent || "").trim(),
         name: (cells[1]?.textContent || "").trim(),
         qty: qtyInput ? Number(qtyInput.value || "0") : parseMoney(cells[2]?.textContent || "0"),
-        unitPrice: parseMoney(cells[3]?.textContent || "0"),
+        unitPrice: priceInput ? Number(String(priceInput.value || "0").replace(/[^0-9.-]/g, "")) : parseMoney(cells[3]?.textContent || "0"),
         amount: parseMoney(row.querySelector(".row-amount")?.textContent || "0"),
         po: (row.querySelector(".po-cell")?.textContent || "").trim(),
         memo: memoInput ? memoInput.value.trim() : (cells[6]?.textContent || "").trim()
@@ -958,7 +992,8 @@ SALES_PAGE = """<!DOCTYPE html>
         var originalQty = Number(row.dataset.originalQty || "0");
         var qtyInput = row.querySelector(".qty-input");
         var qty = qtyInput ? Number(qtyInput.value || "0") : Number((row.children[2]?.textContent || "0").replaceAll(",", ""));
-        var unitPrice = Number(row.dataset.unitPrice || "0");
+        var priceInput = row.querySelector(".locked-price-input");
+        var unitPrice = priceInput ? Number(String(priceInput.value || "0").replace(/[^0-9.-]/g, "")) : Number(row.dataset.unitPrice || "0");
         var amountCell = row.querySelector(".row-amount");
         var amount = qtyInput ? qty * unitPrice : parseMoney(amountCell ? amountCell.textContent : "0");
         if (qtyInput && amountCell) amountCell.textContent = money(amount);
@@ -1271,9 +1306,11 @@ SALES_PAGE = """<!DOCTYPE html>
       form.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
         var qty = row.querySelector('.qty-input');
         var memo = row.querySelector('.memo-input');
+        var price = row.querySelector('.locked-price-input');
         var qtyChanged = qty && Number(qty.value || "0") !== Number(row.dataset.savedQty || row.dataset.originalQty || "0");
         var memoChanged = memo && memo.value.trim() !== String(row.dataset.savedMemo || "");
-        if ((qtyChanged || memoChanged) && row.dataset.confirmed === "true") changedConfirmedMonths.add(row.dataset.month);
+        var priceChanged = price && Number(String(price.value || "0").replace(/[^0-9.-]/g, "")) !== Number(row.dataset.unitPrice || "0");
+        if ((qtyChanged || memoChanged || priceChanged) && row.dataset.confirmed === "true") changedConfirmedMonths.add(row.dataset.month);
       });
       if (!changedConfirmedMonths.size) return true;
       var warning = "계산서 발행 확인이 완료된 건입니다. 수정하면 확인 당시의 내용과 달라질 수 있습니다. 그래도 수정하시겠습니까?";
@@ -1282,6 +1319,19 @@ SALES_PAGE = """<!DOCTYPE html>
       if (!reason || !reason.trim()) { alert("수정 사유를 입력해야 합니다."); return false; }
       form.querySelector('input[name="override_reason"]').value = reason.trim();
       return true;
+    }
+    function requestPriceEdit(button) {
+      var wrap = button.closest(".locked-price-wrap");
+      var input = wrap.querySelector(".locked-price-input");
+      var marker = wrap.querySelector(".price-approved-marker");
+      if (!confirm("단가 수정을 요청합니다.\\n본인이 직접 확인했으며 이 단가를 수정하시겠습니까?")) return;
+      marker.value = "1";
+      input.readOnly = false;
+      input.classList.add("is-unlocked");
+      input.focus();
+      input.select();
+      button.textContent = "수정 승인됨";
+      button.classList.add("is-approved");
     }
     function syncBlankDateInputs() {
       document.querySelectorAll('input[type="date"]').forEach(function(input) {
@@ -1388,7 +1438,7 @@ SALES_PAGE = """<!DOCTYPE html>
       syncBlankDateInputs();
       initTesterCommaInputs();
       initFolderYearFilter();
-      document.querySelectorAll(".qty-input, .memo-input").forEach(function(input) {
+      document.querySelectorAll(".qty-input, .memo-input, .locked-price-input").forEach(function(input) {
         input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
       });
       document.querySelectorAll(".money-input").forEach(function(input) {
@@ -1608,7 +1658,7 @@ SALES_PAGE = """<!DOCTYPE html>
           <div id="detail-month-empty" style="display:none;margin:12px 16px;padding:12px;border:1px dashed #cbd9e8;border-radius:8px;background:#f8fbff;color:#667085;font-size:13px;"></div>
           <form method="post" action="/sales/save" onsubmit="return prepareSalesSave(this)">
           <input type="hidden" name="override_reason" value="">
-          <div id="detail-save-row" class="save-row"><button class="btn" type="submit">수량/메모 저장</button></div><div id="mode-note" class="mode-note"><strong>보기방식 안내</strong>SKU 합계는 확인용이며, 저장/수정/삭제는 PO별 상세에서만 가능합니다.</div>
+          <div id="detail-save-row" class="save-row"><button class="btn" type="submit">수량/메모/단가 저장</button></div><div id="mode-note" class="mode-note"><strong>보기방식 안내</strong>SKU 합계는 확인용이며, 저장/수정/삭제는 PO별 상세에서만 가능합니다.</div>
           <div class="scroll">
             <table class="detail-table resizable-table">
               <colgroup>
@@ -2328,14 +2378,14 @@ def render_master_rows(master_path: Path) -> str:
             f'<tr data-unavailable="{unavailable_flag}" data-simple-no="{simple_flag}" data-amount="{amount_flag}">'
             f'<td class="sku">{html.escape(sku)}<input type="hidden" name="row" value="{row}"></td>'
             f'<td class="product">{html.escape(name)}</td>'
-            f'<td class="price-cell"><input class="qty" name="amount_{row}" value="{html.escape(amount)}" inputmode="numeric">{price_panel}</td>'
+            f'<td><input class="qty" name="amount_{row}" value="{html.escape(amount)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="simple_no_{row}" value="{html.escape(simple_no)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="width_mm_{row}" value="{html.escape(width_mm)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="depth_mm_{row}" value="{html.escape(depth_mm)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="height_mm_{row}" value="{html.escape(height_mm)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="weight_kg_{row}" value="{html.escape(weight_kg)}" inputmode="decimal"></td>'
             f'<td><input type="checkbox" name="unavailable_{row}" value="1"{checked}></td>'
-            f"<td>{html.escape(barcode)}</td>"
+            f'<td class="price-cell">{html.escape(barcode)}{price_panel}</td>'
             "</tr>"
         )
     return "\n".join(rows)
@@ -2750,6 +2800,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         return [], []
     master_amounts = get_master_amounts_by_sku()
     price_history = load_price_history()
+    price_edits = load_sales_price_edits()
     wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
     ws = wb.active
     summary = defaultdict(lambda: {"qty": 0, "amount": 0, "pos": set()})
@@ -2772,6 +2823,10 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
             price_history,
         )
         unit_price = round(original_amount / original_qty) if original_qty and original_amount else master_unit_price
+        price_edit = price_edits.get(sales_price_edit_key(day, row_po_no or remarks, sku), {})
+        edited_unit_price = parse_int(price_edit.get("current_price")) if isinstance(price_edit, dict) else 0
+        if edited_unit_price > 0:
+            unit_price = edited_unit_price
         amount = unit_price * adjusted_qty
         clean_po_numbers = []
         if not day:
@@ -2792,7 +2847,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
             amount,
             row_po_no or ", ".join(clean_po_numbers),
             adjusted_memo,
-            adjusted_qty != original_qty or bool(adjusted_memo),
+            adjusted_qty != original_qty or bool(adjusted_memo) or edited_unit_price > 0,
         ])
     if aggregate_by_sku:
         grouped_rows = {}
@@ -3382,6 +3437,27 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     return cells, issued, confirmed
 
 
+def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[str, object]) -> str:
+    history = edit_record.get("history", []) if isinstance(edit_record, dict) else []
+    history_rows = "".join(
+        f'<div><strong>{parse_int(item.get("before")):,}원 → {parse_int(item.get("after")):,}원</strong>'
+        f' · {html.escape(str(item.get("user", "")))} · {html.escape(str(item.get("at", "")))}</div>'
+        for item in reversed(history[-10:])
+        if isinstance(item, dict)
+    )
+    history_html = (
+        f'<details class="price-audit"><summary>수정 이력 {len(history)}건</summary>{history_rows}</details>'
+        if history else ""
+    )
+    return (
+        f'<div class="locked-price-wrap"><input class="locked-price-input" name="price_{row_no}" '
+        f'value="{unit_price}" inputmode="numeric" readonly>'
+        f'<input class="price-approved-marker" type="hidden" name="price_approved_{row_no}" value="0">'
+        f'<button class="price-request-btn" type="button" onclick="requestPriceEdit(this)">단가 수정 요청</button>'
+        f'{history_html}</div>'
+    )
+
+
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     if folder_mode:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
@@ -3394,6 +3470,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         row for row in detail_rows if str(row[1]).startswith(current_month)
     ]
     visible_po_detail_rows = po_detail_rows if folder_mode else []
+    sales_price_edits = load_sales_price_edits()
     if summary_rows:
         def sales_extra_amounts(amount: int) -> tuple[int, int]:
             vat_excluded = round(amount / 1.1)
@@ -3485,13 +3562,15 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                         day_record = day_sales_confirmation(str(day))
                         month_confirmed = str(bool(day_record.get("confirmed"))).lower()
                         if folder_mode and view_mode == "po":
+                            price_edit_record = sales_price_edits.get(sales_price_edit_key(day, remarks, sku), {})
+                            price_editor = render_locked_price_editor(row_no, unit_price, price_edit_record)
                             parts.append(
                                 f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="po" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-po-list="{html.escape(str(remarks), quote=True)}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
                                 f'<input type="hidden" name="row" value="{row_no}"></td>'
                                 f"<td>{html.escape(str(name))}</td>"
                                 f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
                                 f'name="qty_{row_no}" value="{qty}"></td>'
-                                f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
+                                f'<td>{price_editor}</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
                                 f'<td><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
                                 f'placeholder="수정 사유"></td>'
                                 f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
@@ -4142,6 +4221,8 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
     wb, ws = ensure_monthly_sales_book()
+    price_edits = load_sales_price_edits()
+    price_edits_changed = False
     row_values = form["row"] if "row" in form else []
     if not isinstance(row_values, list):
         row_values = [row_values]
@@ -4158,6 +4239,8 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             continue
         qty_key = f"qty_{row}"
         memo_key = f"memo_{row}"
+        price_key = f"price_{row}"
+        price_approved_key = f"price_approved_{row}"
         original_qty = parse_int(ws.cell(row, 6).value)
         new_qty_text = form[qty_key].value.strip() if qty_key in form else str(original_qty)
         new_memo = form[memo_key].value.strip() if memo_key in form else ""
@@ -4175,6 +4258,34 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             ws.cell(row, 11).value = new_memo
             changed += 1
         day = str(ws.cell(row, 1).value or "")
+        sku = str(ws.cell(row, 4).value or "").strip()
+        po_no = str(ws.cell(row, 12).value or "").strip() or str(ws.cell(row, 9).value or "").strip()
+        edit_key = sales_price_edit_key(day, po_no, sku)
+        edit_record = price_edits.get(edit_key, {})
+        original_amount = parse_int(ws.cell(row, 7).value)
+        original_price = round(original_amount / original_qty) if original_qty and original_amount else 0
+        current_price = parse_int(edit_record.get("current_price"), original_price) if isinstance(edit_record, dict) else original_price
+        price_approved = form[price_approved_key].value.strip() == "1" if price_approved_key in form else False
+        if price_approved:
+            new_price = parse_int(form[price_key].value if price_key in form else current_price)
+            if new_price <= 0:
+                raise ValueError(f"{sku}의 수정 단가는 0원보다 커야 합니다.")
+            if new_price != current_price:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if not isinstance(edit_record, dict):
+                    edit_record = {}
+                edit_record["current_price"] = new_price
+                edit_record.setdefault("history", []).append({
+                    "at": now,
+                    "user": username,
+                    "action": "본인 승인 후 단가 수정",
+                    "before": current_price,
+                    "after": new_price,
+                })
+                price_edits[edit_key] = edit_record
+                price_edits_changed = True
+                row_changes.append({"field": f"{sku} 단가", "before": current_price, "after": new_price})
+                changed += 1
         day_record = confirmation_days.get(day, {}) if isinstance(confirmation_days, dict) else {}
         is_confirmed = (isinstance(day_record, dict) and day_record.get("confirmed")) or day[:7] in completed_months
         if row_changes and is_confirmed:
@@ -4194,6 +4305,8 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             "changes": changes,
         })
     wb.save(SALES_LEDGER_PATH)
+    if price_edits_changed:
+        save_sales_price_edits(price_edits)
     if audit_by_day:
         save_sales_confirmations(confirmation_data)
     write_sales_display_workbook()
