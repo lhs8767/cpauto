@@ -211,30 +211,46 @@ def price_for_date(
 
 
 def save_scheduled_price(sku: str, start_date: str, amount: int, reason: str, username: str) -> None:
+    save_scheduled_prices(sku, [{"start_date": start_date, "amount": amount, "reason": reason}], username)
+
+
+def save_scheduled_prices(sku: str, records: list[dict[str, object]], username: str) -> None:
     if not sku:
         raise ValueError("SKU ID가 없습니다.")
-    try:
-        datetime.strptime(start_date, "%Y-%m-%d")
-    except ValueError as exc:
-        raise ValueError("적용 시작일을 정확히 선택해주세요.") from exc
-    if amount <= 0:
-        raise ValueError("변경 단가는 0원보다 커야 합니다.")
-    if not reason.strip():
-        raise ValueError("변경 사유를 입력해주세요.")
+    if not records:
+        raise ValueError("저장할 단가 변경 내용을 입력해주세요.")
+    normalized = []
+    for record in records:
+        start_date = str(record.get("start_date", "")).strip()
+        amount = parse_int(record.get("amount"))
+        reason = str(record.get("reason", "")).strip()
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("모든 적용 시작일을 정확히 선택해주세요.") from exc
+        if amount <= 0:
+            raise ValueError("모든 변경 단가는 0원보다 커야 합니다.")
+        if not reason:
+            raise ValueError("모든 변경 사유를 입력해주세요.")
+        normalized.append((start_date, amount, reason))
+    if len({start_date for start_date, _amount, _reason in normalized}) != len(normalized):
+        raise ValueError("같은 적용 시작일을 두 번 입력할 수 없습니다.")
+
     history = load_price_history()
     items = history.setdefault(sku, [])
-    record = {
-        "start_date": start_date,
-        "amount": amount,
-        "reason": reason.strip(),
-        "updated_by": username,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    existing = next((item for item in items if str(item.get("start_date")) == start_date), None)
-    if existing is None:
-        items.append(record)
-    else:
-        existing.update(record)
+    for start_date, amount, reason in normalized:
+        saved_record = {
+            "start_date": start_date,
+            "amount": amount,
+            "reason": reason,
+            "updated_by": username,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        existing = next((item for item in items if str(item.get("start_date")) == start_date), None)
+        if existing is None:
+            items.append(saved_record)
+        else:
+            existing.update(saved_record)
     items.sort(key=lambda item: str(item.get("start_date", "")))
     save_price_history(history)
 
@@ -1685,10 +1701,14 @@ MASTER_PAGE = """<!DOCTYPE html>
     .price-detail.open { display: block; }
     .price-history-list { display: grid; gap: 4px; margin-bottom: 8px; font-size: 11px; color: #475467; }
     .price-history-item { display: grid; grid-template-columns: 92px 78px 1fr; gap: 6px; align-items: center; }
-    .price-editor { display: grid; grid-template-columns: 122px 92px minmax(120px, 1fr) auto; gap: 6px; align-items: end; border-top: 1px solid var(--line); padding-top: 8px; }
+    .price-editor { border-top: 1px solid var(--line); padding-top: 8px; }
+    .price-editor-row { display: grid; grid-template-columns: 122px 92px minmax(120px, 1fr) auto; gap: 6px; align-items: end; margin-bottom: 6px; }
     .price-editor label { display: grid; gap: 3px; color: #475467; font-size: 10px; font-weight: 800; }
     .price-editor input { width: 100%; border: 1px solid #b9c6d8; border-radius: 6px; padding: 6px; font-size: 11px; }
     .price-save-btn { border: 0; border-radius: 6px; padding: 7px 9px; background: var(--brand); color: #fff; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .price-add-btn, .price-remove-btn { border: 1px solid #b9c6d8; border-radius: 6px; padding: 6px 8px; background: #fff; color: var(--brand); font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .price-remove-btn { color: var(--danger); }
+    .price-editor-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
     .product { min-width: 420px; }
     .resizable-table th { position: sticky; }
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:3; }
@@ -1861,13 +1881,30 @@ MASTER_PAGE = """<!DOCTYPE html>
       detail.classList.toggle('open');
       button.textContent = detail.classList.contains('open') ? '이력 닫기' : '단가 이력';
     }
-    async function saveScheduledPrice(button) {
+    function addPriceEditorRow(button) {
+      const editor = button.closest('.price-editor');
+      const source = editor.querySelector('.price-editor-row');
+      const row = source.cloneNode(true);
+      row.querySelectorAll('input').forEach(function(input) { input.value = ''; });
+      row.querySelector('.price-remove-btn').style.visibility = '';
+      editor.querySelector('.price-editor-rows').appendChild(row);
+    }
+    function removePriceEditorRow(button) {
+      const editor = button.closest('.price-editor');
+      if (editor.querySelectorAll('.price-editor-row').length > 1) button.closest('.price-editor-row').remove();
+    }
+    async function saveScheduledPrices(button) {
       const detail = button.closest('.price-detail');
+      const items = Array.from(detail.querySelectorAll('.price-editor-row')).map(function(row) {
+        return {
+          start_date: row.querySelector('.price-start').value,
+          amount: row.querySelector('.price-amount').value.replace(/[^0-9]/g, ''),
+          reason: row.querySelector('.price-reason').value
+        };
+      }).filter(function(item) { return item.start_date || item.amount || item.reason; });
       const body = new URLSearchParams({
         sku: detail.dataset.sku,
-        start_date: detail.querySelector('.price-start').value,
-        amount: detail.querySelector('.price-amount').value.replace(/[^0-9]/g, ''),
-        reason: detail.querySelector('.price-reason').value
+        items_json: JSON.stringify(items)
       });
       button.disabled = true;
       try {
@@ -2249,11 +2286,16 @@ def render_price_history_panel(sku: str, base_amount: int, items: list[dict[str,
         f'<div class="price-detail" data-sku="{html.escape(sku)}">'
         f'<div class="price-history-list">{"".join(history_rows)}</div>'
         '<div class="price-editor">'
+        '<div class="price-editor-rows"><div class="price-editor-row">'
         f'<label>적용 시작일<input class="price-start" type="date" value="{default_start}"></label>'
         '<label>변경 단가<input class="price-amount" type="text" inputmode="numeric" placeholder="35,000"></label>'
         '<label>변경 사유<input class="price-reason" type="text" placeholder="예: 원가 인상"></label>'
-        '<button class="price-save-btn" type="button" onclick="saveScheduledPrice(this)">예약 저장</button>'
+        '<button class="price-remove-btn" type="button" onclick="removePriceEditorRow(this)" style="visibility:hidden;">삭제</button>'
         '</div></div>'
+        '<div class="price-editor-actions">'
+        '<button class="price-add-btn" type="button" onclick="addPriceEditorRow(this)">+ 변경 구간 추가</button>'
+        '<button class="price-save-btn" type="button" onclick="saveScheduledPrices(this)">전체 저장</button>'
+        '</div></div></div>'
     )
 
 
@@ -4720,13 +4762,24 @@ class BonnieHandler(BaseHTTPRequestHandler):
         status = 200
         try:
             user = self.current_user() or {}
-            save_scheduled_price(
-                form.get("sku", "").strip(),
-                form.get("start_date", "").strip(),
-                parse_int(form.get("amount", "")),
-                form.get("reason", "").strip(),
-                str(user.get("username", "알 수 없음")),
-            )
+            items_json = form.get("items_json", "").strip()
+            if items_json:
+                items = json.loads(items_json)
+                if not isinstance(items, list):
+                    raise ValueError("단가 변경 형식이 올바르지 않습니다.")
+                save_scheduled_prices(
+                    form.get("sku", "").strip(),
+                    [item for item in items if isinstance(item, dict)],
+                    str(user.get("username", "알 수 없음")),
+                )
+            else:
+                save_scheduled_price(
+                    form.get("sku", "").strip(),
+                    form.get("start_date", "").strip(),
+                    parse_int(form.get("amount", "")),
+                    form.get("reason", "").strip(),
+                    str(user.get("username", "알 수 없음")),
+                )
             payload = {"ok": True, "message": "단가 이력을 저장했습니다."}
         except Exception as exc:
             status = 400
