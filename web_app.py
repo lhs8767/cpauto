@@ -1116,7 +1116,6 @@ SALES_PAGE = """<!DOCTYPE html>
       var selectedPo = (detailPoSelect?.value || "").trim();
       var availablePo = {};
       document.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
-        if ((row.dataset.month || "") < "2026-07") return;
         if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
         getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
       });
@@ -3408,8 +3407,6 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         if folder_mode:
             po_rows = []
             for row in visible_po_detail_rows:
-                if str(row[1])[:7] < "2026-07":
-                    continue
                 row = list(row)
                 row[8] = str(row[8]).replace("PO:", "").strip()
                 po_rows.append(row)
