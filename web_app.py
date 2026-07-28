@@ -2852,7 +2852,13 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         if edited_unit_price > 0:
             unit_price = edited_unit_price
         amount = unit_price * adjusted_qty
-        amount_mismatch = source_amount > 0 and source_amount != amount
+        comparison_unit_price = edited_unit_price if edited_unit_price > 0 else master_unit_price
+        expected_master_amount = comparison_unit_price * adjusted_qty
+        amount_mismatch = (
+            source_amount > 0
+            and comparison_unit_price > 0
+            and source_amount != expected_master_amount
+        )
         clean_po_numbers = []
         if not day:
             continue
