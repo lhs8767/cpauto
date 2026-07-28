@@ -2331,7 +2331,13 @@ def get_sales_qty(line, prefer_inbound: bool = False) -> int:
 def get_sales_amount(line, prefer_inbound: bool = False) -> int:
     inbound_amount = parse_int(getattr(line, "inbound_amount", 0))
     if prefer_inbound:
-        return inbound_amount
+        if inbound_amount > 0:
+            return inbound_amount
+        inbound_qty = parse_int(getattr(line, "inbound_qty", 0))
+        purchase_price = parse_int(getattr(line, "purchase_price", 0))
+        if inbound_qty > 0 and purchase_price > 0:
+            return inbound_qty * purchase_price
+        return 0
     return parse_int(getattr(line, "order_amount", 0))
 
 
@@ -2445,6 +2451,8 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         sales_qty = get_sales_qty(line, prefer_inbound)
         master_unit_price = master_amounts.get(sku, 0)
         sales_amount = master_unit_price * sales_qty if master_unit_price > 0 else get_sales_amount(line, prefer_inbound)
+        if sales_qty > 0 and sales_amount <= 0:
+            sales_amount = parse_int(getattr(line, "purchase_price", 0)) * sales_qty
         if sales_qty <= 0 and sales_amount <= 0:
             continue
         day = parse_date(line.inbound_date)
