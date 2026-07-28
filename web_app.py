@@ -822,6 +822,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .price-audit summary { cursor:pointer; color:#1f4e79; font-weight:800; }
     .price-audit div { margin-top:3px; line-height:1.35; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
+    .detail-row.changed td, .detail-row.changed td input, .detail-row.changed td button, .detail-row.changed td summary { color:#c1121f !important; font-weight:800; }
     .save-row { display:flex; justify-content:flex-end; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
     .year-table th { text-align:center; background:#f8fafc; color:#344054; font-weight:800; }
     .year-table td { text-align:right; }
@@ -999,7 +1000,8 @@ SALES_PAGE = """<!DOCTYPE html>
         var amount = qtyInput ? qty * unitPrice : parseMoney(amountCell ? amountCell.textContent : "0");
         if (qtyInput && amountCell) amountCell.textContent = money(amount);
         var memoInput = row.querySelector(".memo-input");
-        row.classList.toggle("changed", qty !== originalQty || !!(memoInput && memoInput.value.trim()));
+        var savedChange = row.dataset.hasSavedChange === "true";
+        row.classList.toggle("changed", savedChange || qty !== originalQty || !!(memoInput && memoInput.value.trim()));
         if (qtyInput) qtyInput.classList.toggle("changed", qty !== originalQty);
         if (!dayTotals[key]) dayTotals[key] = { qty: 0, amount: 0, day: day, viewMode: viewMode };
         dayTotals[key].qty += qty;
@@ -3594,7 +3596,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                             price_edit_record = sales_price_edits.get(sales_price_edit_key(day, remarks, sku), {})
                             price_editor = render_locked_price_editor(row_no, unit_price, price_edit_record)
                             parts.append(
-                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="po" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-po-list="{html.escape(str(remarks), quote=True)}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
+                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="po" data-has-saved-change="{str(bool(changed)).lower()}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-confirmed="{month_confirmed}" data-original-qty="{original_qty}" data-saved-qty="{qty}" data-saved-memo="{html.escape(str(memo), quote=True)}" data-unit-price="{unit_price}" data-po-list="{html.escape(str(remarks), quote=True)}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}"><td>{html.escape(str(sku))}'
                                 f'<input type="hidden" name="row" value="{row_no}"></td>'
                                 f"<td>{html.escape(str(name))}</td>"
                                 f'<td class="{changed_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
@@ -3606,7 +3608,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                             )
                         else:
                             parts.append(
-                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="sku" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
+                                f'<tr class="detail-row {changed_class.strip()}{hidden_class}{mode_hidden}" data-view-mode="sku" data-has-saved-change="{str(bool(changed)).lower()}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
                                 f"<td>{html.escape(str(sku))}</td><td>{html.escape(str(name))}</td>"
                                 f'<td class="{changed_class.strip()}">{qty:,}</td>'
                                 f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
