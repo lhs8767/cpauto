@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,6 +42,7 @@ SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
+PRICE_HISTORY_PATH = DATA_DIR / "상품단가_이력.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -175,6 +176,67 @@ def restore_master_file_from_supabase() -> None:
 
 def backup_master_file_to_supabase(source_path: Path) -> None:
     backup_file_to_supabase("master_file", source_path)
+
+
+def load_price_history() -> dict[str, list[dict[str, object]]]:
+    restore_file_from_supabase("master_price_history", PRICE_HISTORY_PATH)
+    if not PRICE_HISTORY_PATH.exists():
+        return {}
+    try:
+        data = json.loads(PRICE_HISTORY_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_price_history(data: dict[str, list[dict[str, object]]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PRICE_HISTORY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("master_price_history", PRICE_HISTORY_PATH)
+
+
+def price_for_date(
+    sku: str,
+    base_amount: int,
+    target_date: str = "",
+    history: dict[str, list[dict[str, object]]] | None = None,
+) -> int:
+    date_text = str(target_date or datetime.now().strftime("%Y-%m-%d"))[:10]
+    selected = base_amount
+    price_history = history if history is not None else load_price_history()
+    for item in sorted(price_history.get(str(sku), []), key=lambda value: str(value.get("start_date", ""))):
+        if str(item.get("start_date", "")) <= date_text:
+            selected = parse_int(item.get("amount"), selected)
+    return selected
+
+
+def save_scheduled_price(sku: str, start_date: str, amount: int, reason: str, username: str) -> None:
+    if not sku:
+        raise ValueError("SKU ID가 없습니다.")
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("적용 시작일을 정확히 선택해주세요.") from exc
+    if amount <= 0:
+        raise ValueError("변경 단가는 0원보다 커야 합니다.")
+    if not reason.strip():
+        raise ValueError("변경 사유를 입력해주세요.")
+    history = load_price_history()
+    items = history.setdefault(sku, [])
+    record = {
+        "start_date": start_date,
+        "amount": amount,
+        "reason": reason.strip(),
+        "updated_by": username,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    existing = next((item for item in items if str(item.get("start_date")) == start_date), None)
+    if existing is None:
+        items.append(record)
+    else:
+        existing.update(record)
+    items.sort(key=lambda item: str(item.get("start_date", "")))
+    save_price_history(history)
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 from po_automation import create_processed_po, read_master, read_po_lines, write_summary_workbook  # noqa: E402
@@ -1080,7 +1142,7 @@ SALES_PAGE = """<!DOCTYPE html>
         var haystack = (row.dataset.search || "").toLowerCase();
         var rowMode = row.dataset.viewMode || "sku";
         var poList = getRowPoList(row);
-        var allowPoMonth = detailViewMode !== "po" || (row.dataset.month || "") >= "2026-07";
+        var allowPoMonth = true;
         var poMatched = detailViewMode !== "po" || !requestedPo || poList.includes(requestedPo);
         var keywordMatched = !detailKeyword || (keywordLooksPo ? poList.includes(detailKeyword) : haystack.includes(detailKeyword));
         var rowMonth = row.dataset.month || "";
@@ -1499,7 +1561,7 @@ SALES_PAGE = """<!DOCTYPE html>
             <label>보기방식
               <select id="detail-view-mode">
                 <option value="sku">SKU 합계</option>
-                <option value="po">PO별 상세(2026년 7월부터)</option>
+                <option value="po">PO별 상세(전 기간)</option>
               </select>
             </label>
             <label>PO 선택
@@ -1616,6 +1678,18 @@ MASTER_PAGE = """<!DOCTYPE html>
     th { position: sticky; top: 0; background: #f8fafc; z-index: 1; color: #344054; }
     td.sku { font-weight: 700; color: #1f4e79; white-space: nowrap; }
     input.qty { width: 100%; min-width: 72px; border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; text-align: right; }
+    .price-cell { min-width: 120px; }
+    .price-tools { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+    .price-history-btn { border: 1px solid #b9c6d8; background: #fff; color: var(--brand); border-radius: 6px; padding: 5px 8px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .price-next { color: #667085; font-size: 10px; line-height: 1.35; }
+    .price-detail { display: none; margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #f8fbff; min-width: 330px; }
+    .price-detail.open { display: block; }
+    .price-history-list { display: grid; gap: 4px; margin-bottom: 8px; font-size: 11px; color: #475467; }
+    .price-history-item { display: grid; grid-template-columns: 92px 78px 1fr; gap: 6px; align-items: center; }
+    .price-editor { display: grid; grid-template-columns: 122px 92px minmax(120px, 1fr) auto; gap: 6px; align-items: end; border-top: 1px solid var(--line); padding-top: 8px; }
+    .price-editor label { display: grid; gap: 3px; color: #475467; font-size: 10px; font-weight: 800; }
+    .price-editor input { width: 100%; border: 1px solid #b9c6d8; border-radius: 6px; padding: 6px; font-size: 11px; }
+    .price-save-btn { border: 0; border-radius: 6px; padding: 7px 9px; background: var(--brand); color: #fff; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
     .product { min-width: 420px; }
     .resizable-table th { position: sticky; }
     .col-resizer { position:absolute; top:0; right:-4px; width:8px; height:100%; cursor:col-resize; user-select:none; touch-action:none; z-index:3; }
@@ -1782,6 +1856,34 @@ MASTER_PAGE = """<!DOCTYPE html>
     });
     function showComingSoon(name) {
       alert(name + " 메뉴는 아직 준비 중입니다. 지금은 쿠팡 PO 변환과 기초자료 관리를 사용할 수 있습니다.");
+    }
+    function togglePriceHistory(button) {
+      const detail = button.closest('.price-cell').querySelector('.price-detail');
+      detail.classList.toggle('open');
+      button.textContent = detail.classList.contains('open') ? '이력 닫기' : '단가 이력';
+    }
+    async function saveScheduledPrice(button) {
+      const detail = button.closest('.price-detail');
+      const body = new URLSearchParams({
+        sku: detail.dataset.sku,
+        start_date: detail.querySelector('.price-start').value,
+        amount: detail.querySelector('.price-amount').value.replace(/[^0-9]/g, ''),
+        reason: detail.querySelector('.price-reason').value
+      });
+      button.disabled = true;
+      try {
+        const response = await fetch('/master/price-history/save', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+          body: body.toString()
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.message || '저장하지 못했습니다.');
+        location.reload();
+      } catch (error) {
+        alert(error.message);
+        button.disabled = false;
+      }
     }
   </script>
 </head>
@@ -2097,10 +2199,70 @@ def replace_saved_master_file(name: str, master_bytes: bytes) -> Path:
     return target_path
 
 
+def render_price_history_panel(sku: str, base_amount: int, items: list[dict[str, object]]) -> str:
+    ordered = sorted(items, key=lambda item: str(item.get("start_date", "")))
+    today = datetime.now().strftime("%Y-%m-%d")
+    next_item = next((item for item in ordered if str(item.get("start_date", "")) > today), None)
+    next_text = ""
+    if next_item:
+        next_text = (
+            f'<span class="price-next">{html.escape(str(next_item.get("start_date", "")))}부터 '
+            f'{parse_int(next_item.get("amount")):,}원</span>'
+        )
+
+    history_rows = []
+    if ordered:
+        first_start = str(ordered[0].get("start_date", ""))
+        try:
+            base_end = (datetime.strptime(first_start, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+            history_rows.append(
+                f'<div class="price-history-item"><span>기초 ~ {base_end}</span>'
+                f'<strong>{base_amount:,}원</strong><span>기초 단가</span></div>'
+            )
+        except ValueError:
+            pass
+    else:
+        history_rows.append(
+            f'<div class="price-history-item"><span>현재</span><strong>{base_amount:,}원</strong><span>기초 단가</span></div>'
+        )
+    for index, item in enumerate(ordered):
+        start_date = str(item.get("start_date", ""))
+        period = f"{start_date} ~"
+        if index + 1 < len(ordered):
+            try:
+                end_date = (
+                    datetime.strptime(str(ordered[index + 1].get("start_date", "")), "%Y-%m-%d")
+                    - timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+                period = f"{start_date} ~ {end_date}"
+            except ValueError:
+                pass
+        reason = html.escape(str(item.get("reason", "")))
+        history_rows.append(
+            f'<div class="price-history-item"><span>{html.escape(period)}</span>'
+            f'<strong>{parse_int(item.get("amount")):,}원</strong><span>{reason}</span></div>'
+        )
+    default_start = (datetime.now().replace(day=1) + timedelta(days=35)).replace(day=1).strftime("%Y-%m-%d")
+    return (
+        '<div class="price-tools">'
+        '<button class="price-history-btn" type="button" onclick="togglePriceHistory(this)">단가 이력</button>'
+        f'{next_text}</div>'
+        f'<div class="price-detail" data-sku="{html.escape(sku)}">'
+        f'<div class="price-history-list">{"".join(history_rows)}</div>'
+        '<div class="price-editor">'
+        f'<label>적용 시작일<input class="price-start" type="date" value="{default_start}"></label>'
+        '<label>변경 단가<input class="price-amount" type="text" inputmode="numeric" placeholder="35,000"></label>'
+        '<label>변경 사유<input class="price-reason" type="text" placeholder="예: 원가 인상"></label>'
+        '<button class="price-save-btn" type="button" onclick="saveScheduledPrice(this)">예약 저장</button>'
+        '</div></div>'
+    )
+
+
 def render_master_rows(master_path: Path) -> str:
     wb = load_workbook(master_path, data_only=True)
     ws = wb.active
     cols = find_master_columns(ws)
+    price_history = load_price_history()
     rows: list[str] = []
     for row in range(2, ws.max_row + 1):
         sku = str(ws.cell(row, cols["sku"]).value or "").strip()
@@ -2119,11 +2281,13 @@ def render_master_rows(master_path: Path) -> str:
         simple_flag = "1" if simple_no else "0"
         amount_flag = "1" if parse_int(amount) > 0 else "0"
         unavailable_flag = "1" if unavailable else "0"
+        base_amount = parse_int(amount)
+        price_panel = render_price_history_panel(sku, base_amount, price_history.get(sku, []))
         rows.append(
             f'<tr data-unavailable="{unavailable_flag}" data-simple-no="{simple_flag}" data-amount="{amount_flag}">'
             f'<td class="sku">{html.escape(sku)}<input type="hidden" name="row" value="{row}"></td>'
             f'<td class="product">{html.escape(name)}</td>'
-            f'<td><input class="qty" name="amount_{row}" value="{html.escape(amount)}" inputmode="numeric"></td>'
+            f'<td class="price-cell"><input class="qty" name="amount_{row}" value="{html.escape(amount)}" inputmode="numeric">{price_panel}</td>'
             f'<td><input class="qty" name="simple_no_{row}" value="{html.escape(simple_no)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="width_mm_{row}" value="{html.escape(width_mm)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="depth_mm_{row}" value="{html.escape(depth_mm)}" inputmode="numeric"></td>'
@@ -2429,6 +2593,7 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     po_numbers = {po for line in lines for po in split_po_numbers(getattr(line, "po_no", ""))}
     prefer_inbound = has_inbound_sales_data(lines)
     master_amounts = get_master_amounts_by_sku()
+    price_history = load_price_history()
 
     existing_adjustments = {}
     rows_to_keep = []
@@ -2466,13 +2631,17 @@ def update_monthly_sales(lines) -> tuple[int, int]:
     for line in lines:
         sku = str(line.sku_id or "").strip()
         sales_qty = get_sales_qty(line, prefer_inbound)
-        master_unit_price = master_amounts.get(sku, 0)
-        sales_amount = master_unit_price * sales_qty if master_unit_price > 0 else get_sales_amount(line, prefer_inbound)
-        if sales_qty > 0 and sales_amount <= 0:
+        day = parse_date(line.inbound_date)
+        master_unit_price = price_for_date(sku, master_amounts.get(sku, 0), day, price_history)
+        sales_amount = get_sales_amount(line, prefer_inbound)
+        if sales_qty > 0 and price_history.get(sku) and master_unit_price > 0:
+            sales_amount = master_unit_price * sales_qty
+        elif sales_qty > 0 and sales_amount <= 0:
             sales_amount = parse_int(getattr(line, "purchase_price", 0)) * sales_qty
+        if sales_qty > 0 and sales_amount <= 0 and master_unit_price > 0:
+            sales_amount = master_unit_price * sales_qty
         if sales_qty <= 0 and sales_amount <= 0:
             continue
-        day = parse_date(line.inbound_date)
         for po_no in split_po_numbers(getattr(line, "po_no", "")):
             key = (day, po_no, sku)
             item = grouped[key]
@@ -2539,6 +2708,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
     if not SALES_LEDGER_PATH.exists():
         return [], []
     master_amounts = get_master_amounts_by_sku()
+    price_history = load_price_history()
     wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
     ws = wb.active
     summary = defaultdict(lambda: {"qty": 0, "amount": 0, "pos": set()})
@@ -2554,8 +2724,13 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
-        master_unit_price = master_amounts.get(str(sku).strip(), 0)
-        unit_price = master_unit_price if master_unit_price > 0 else (round(original_amount / original_qty) if original_qty else 0)
+        master_unit_price = price_for_date(
+            str(sku).strip(),
+            master_amounts.get(str(sku).strip(), 0),
+            day,
+            price_history,
+        )
+        unit_price = round(original_amount / original_qty) if original_qty and original_amount else master_unit_price
         amount = unit_price * adjusted_qty
         clean_po_numbers = []
         if not day:
@@ -4293,6 +4468,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     return
                 self.handle_master_save()
                 return
+            if path == "/master/price-history/save":
+                if self.require_permission("master") is None:
+                    return
+                self.handle_price_history_save()
+                return
             if path == "/master/growth-incentive/save":
                 if self.require_permission("master") is None:
                     return
@@ -4537,6 +4717,29 @@ class BonnieHandler(BaseHTTPRequestHandler):
             self.send_html(self.master_page(build_message("ok", f"저장되었습니다. 변경 {changed}건을 반영했습니다.")))
         except Exception as exc:
             self.send_html(self.master_page(build_message("err", f"저장 중 오류가 났습니다: {exc}")), status=500)
+
+    def handle_price_history_save(self) -> None:
+        form = self.read_urlencoded_form()
+        status = 200
+        try:
+            user = self.current_user() or {}
+            save_scheduled_price(
+                form.get("sku", "").strip(),
+                form.get("start_date", "").strip(),
+                parse_int(form.get("amount", "")),
+                form.get("reason", "").strip(),
+                str(user.get("username", "알 수 없음")),
+            )
+            payload = {"ok": True, "message": "단가 이력을 저장했습니다."}
+        except Exception as exc:
+            status = 400
+            payload = {"ok": False, "message": str(exc)}
+        content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def handle_growth_incentive_save(self) -> None:
         content_type = self.headers.get("Content-Type", "")
