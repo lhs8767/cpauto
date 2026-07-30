@@ -757,7 +757,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .year-panel { order:4; }
     .tester-panel { order:5; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow); overflow:hidden; min-width:0; }
-    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    .panel-head { padding:16px 18px; border-bottom:1px solid var(--line); font-weight:800; display:flex; justify-content:flex-start; align-items:center; gap:12px; flex-wrap:wrap; }
     .panel-body { padding:18px; }
     input[type=file] { width:100%; border:1px dashed #9fb2c8; background:#f8fbff; border-radius:8px; padding:14px; margin-bottom:12px; }
     .btn { text-decoration:none; border:0; border-radius:8px; padding:10px 14px; background:var(--brand); color:white; font-weight:800; cursor:pointer; font-size:14px; }
@@ -773,10 +773,11 @@ SALES_PAGE = """<!DOCTYPE html>
     .summary-lookup .lookup-reset { height:34px; padding:6px 12px; border-radius:7px; }
     .summary-months { display:grid; gap:12px; padding:14px; background:#f7fafc; }
     .summary-month-section { border:1px solid #d8e4ef; border-radius:8px; background:#fff; overflow:hidden; box-shadow:0 6px 16px rgba(16,24,40,.05); }
-    .summary-month-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; background:#eef6f7; color:#173f68; border-bottom:1px solid #d8e4ef; }
+    .summary-month-head { display:flex; align-items:center; justify-content:flex-start; gap:10px; padding:10px 12px; background:#eef6f7; color:#173f68; border-bottom:1px solid #d8e4ef; }
     .summary-month-title { font-size:14px; font-weight:900; letter-spacing:0; }
     .summary-month-title small, .summary-month-metrics { display:none; }
-    .summary-month-toggle { border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:5px 9px; font-size:12px; font-weight:900; cursor:pointer; }
+    .summary-month-toggle { border:1px solid #1f5d8f; background:#1f5d8f; color:#fff; border-radius:6px; padding:6px 10px; font-size:12px; font-weight:900; cursor:pointer; box-shadow:0 2px 6px rgba(31,93,143,.18); }
+    .summary-month-toggle:hover { background:#174c76; border-color:#174c76; }
     .summary-month-body { display:block; }
     .summary-month-section.is-collapsed .summary-month-body { display:none; }
     .summary-month-total { background:#fff2cc; font-weight:900; }
@@ -839,14 +840,15 @@ SALES_PAGE = """<!DOCTYPE html>
     .folder-year-filter label { color:#173f68; font-size:13px; font-weight:900; }
     .folder-year-filter select { min-width:120px; border:1px solid #9fb2c8; border-radius:7px; padding:8px 10px; background:#fff; color:#173f68; font:inherit; font-weight:800; }
     .lookup-row .lookup-reset { align-self:end; border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; }
-    .detail-result-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
+    .detail-result-bar { display:flex; align-items:center; justify-content:flex-start; gap:12px; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); background:#eef6ff; }
     .detail-result-summary { display:flex; align-items:center; gap:18px; flex-wrap:wrap; color:#1f4e79; font-size:13px; font-weight:800; }
     .detail-result-summary strong { color:#0b3155; font-size:15px; }
     .detail-download { border:0; border-radius:7px; padding:9px 14px; background:#1f5d8f; color:#fff; font-weight:900; cursor:pointer; }
     .inline-delete-form { align-self:end; margin:0; }
     .inline-delete-form .delete-btn { width:100%; }
-    .panel-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    .toggle-btn { border:1px solid #b9c6d8; background:#fff; color:#1f4e79; border-radius:6px; padding:8px 10px; font-weight:800; cursor:pointer; font-size:13px; }
+    .panel-actions { display:flex; align-items:center; justify-content:flex-start; gap:8px; flex-wrap:wrap; }
+    .toggle-btn { border:1px solid #1f5d8f; background:#1f5d8f; color:#fff; border-radius:6px; padding:8px 11px; font-weight:900; cursor:pointer; font-size:13px; box-shadow:0 2px 6px rgba(31,93,143,.18); }
+    .toggle-btn:hover { background:#174c76; border-color:#174c76; }
     .delete-btn { border:1px solid #fecdca; background:#fff5f5; color:#b42318; border-radius:6px; padding:7px 9px; font-weight:800; cursor:pointer; font-size:12px; }
     .mode-note { display:none; position:fixed; left:0; top:0; z-index:40; width:280px; max-width:calc(100vw - 24px); padding:10px 12px; border:1px solid #c7d7e8; border-radius:8px; background:#fff; color:#26384d; box-shadow:0 10px 28px rgba(16,24,40,.14); font-size:12px; line-height:1.5; }
     .mode-note.is-visible { display:block; }
