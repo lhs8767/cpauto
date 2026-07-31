@@ -824,7 +824,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .price-audit div { margin-top:3px; line-height:1.35; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
     .detail-row.amount-mismatch td, .detail-row.amount-mismatch td input, .detail-row.amount-mismatch td button, .detail-row.amount-mismatch td summary { color:#c1121f !important; font-weight:800; }
-    .save-row { display:flex; justify-content:flex-end; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
+    .save-row { display:flex; justify-content:flex-start; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
     .year-table th { text-align:center; background:#f8fafc; color:#344054; font-weight:800; }
     .year-table td { text-align:right; }
     .year-table td:first-child { text-align:left; font-weight:700; }
@@ -1743,11 +1743,13 @@ MASTER_PAGE = """<!DOCTYPE html>
     .field label { display: block; font-size: 12px; font-weight: 800; color: #344054; margin-bottom: 6px; }
     .field input[type=text], .field input[type=number] { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px 11px; font-size: 14px; background: white; }
     .check-field { display: flex; gap: 7px; align-items: center; height: 39px; font-size: 13px; font-weight: 700; }
-    .toolbar { display: grid; grid-template-columns: minmax(260px, 460px) auto; gap: 10px; align-items: end; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .toolbar { display: flex; justify-content: flex-start; gap: 10px; align-items: end; flex-wrap: wrap; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+    .toolbar > label { flex: 0 1 460px; }
+    .toolbar > div:first-child:not(.toolbar-actions) { flex: 0 1 auto; max-width: 760px; }
     .search { width: min(460px, 100%); border: 1px solid var(--line); border-radius: 8px; padding: 11px 12px; font-size: 14px; }
     .toolbar-sort { display: flex; flex-direction: column; gap: 5px; color: #475467; font-size: 12px; font-weight: 800; }
     .toolbar-sort select { width: 100%; border: 1px solid #b9c6d8; border-radius: 8px; padding: 9px 10px; font: inherit; background: white; }
-    .toolbar-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+    .toolbar-actions { display: flex; gap: 10px; justify-content: flex-start; align-items: center; flex-wrap: wrap; }
     .filter-row { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #fbfcfe; }
     .filter-row label { display: flex; flex-direction: column; gap: 5px; color: #475467; font-size: 12px; font-weight: 800; }
     .filter-row select { width: 100%; border: 1px solid #b9c6d8; border-radius: 8px; padding: 9px 10px; font: inherit; background: white; }
@@ -1792,7 +1794,8 @@ MASTER_PAGE = """<!DOCTYPE html>
       .app { grid-template-columns: 1fr; }
       .side { display: none; }
       .main { padding: 18px; }
-      .toolbar { grid-template-columns: 1fr; align-items: stretch; }
+      .toolbar { align-items: stretch; }
+      .toolbar > label, .toolbar > div:first-child:not(.toolbar-actions), .search { flex-basis: 100%; max-width: 100%; }
       .filter-row { grid-template-columns: 1fr 1fr; }
     }
   </style>
@@ -2980,7 +2983,7 @@ def render_growth_incentive_tables() -> str:
         toggle_text = "숨기기" if key == "monthly" else "펼치기"
         return (
             f'<details class="growth-group"{opened} style="border:1px solid #d9e1ee;border-radius:12px;background:#fff;margin-bottom:16px;overflow:hidden;">'
-            f'<summary style="cursor:pointer;padding:14px 18px;background:#eaf2fb;font-size:17px;font-weight:800;color:#17365d;display:flex;align-items:center;justify-content:space-between;list-style:none;">'
+            f'<summary style="cursor:pointer;padding:14px 18px;background:#eaf2fb;font-size:17px;font-weight:800;color:#17365d;display:flex;align-items:center;justify-content:flex-start;gap:10px;list-style:none;">'
             f'<span>{html.escape(title)}</span><span class="growth-toggle-text">{toggle_text}</span></summary>'
             f'<div style="padding:14px 18px 18px;"><div style="color:#667085;font-size:13px;margin-bottom:12px;">{html.escape(description)}</div>'
             f'<div class="growth-period-buttons">{buttons}</div>{tables}</div></details>'
@@ -2988,7 +2991,7 @@ def render_growth_incentive_tables() -> str:
 
     return (
         '<style>'
-        '.growth-group summary::-webkit-details-marker{display:none}.growth-toggle-text{font-size:12px;color:#1f4e79;background:#fff;border:1px solid #b9c9dc;border-radius:7px;padding:6px 10px;min-width:44px;text-align:center}'
+        '.growth-group summary::-webkit-details-marker{display:none}.growth-toggle-text{font-size:12px;color:#fff;background:#1f5d8f;border:1px solid #1f5d8f;border-radius:7px;padding:6px 10px;min-width:44px;text-align:center;box-shadow:0 2px 6px rgba(31,93,143,.18)}'
         '.growth-period-buttons{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px}'
         '[data-growth-group="quarterly"]~*{}'
         '.growth-period-btn{flex:0 0 58px;border:1px solid #c7d3e3;background:#f8fafc;color:#29455f;border-radius:8px;padding:7px 5px;font-size:12px;font-weight:800;cursor:pointer;transition:.15s}'
