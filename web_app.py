@@ -2538,9 +2538,10 @@ def update_master_amounts_from_lines(lines) -> int:
         prefer_inbound = has_inbound_sales_data(lines)
         sales_qty = get_sales_qty(line, prefer_inbound)
         sales_amount = get_sales_amount(line, prefer_inbound)
-        if sales_qty <= 0 or sales_amount <= 0:
+        purchase_price = parse_int(getattr(line, "purchase_price", 0))
+        if sales_qty <= 0 or (purchase_price <= 0 and sales_amount <= 0):
             continue
-        unit_price = round(sales_amount / sales_qty) if sales_qty else parse_int(getattr(line, "purchase_price", 0))
+        unit_price = purchase_price if purchase_price > 0 else round(sales_amount / sales_qty)
         if unit_price <= 0 and line.available_qty:
             unit_price = round(parse_int(getattr(line, "order_amount", 0)) / line.available_qty)
         if unit_price > 0:
@@ -2763,11 +2764,10 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         day = parse_date(line.inbound_date)
         master_unit_price = price_for_date(sku, master_amounts.get(sku, 0), day, price_history)
         source_sales_amount = get_sales_amount(line, prefer_inbound)
-        sales_amount = source_sales_amount
+        purchase_price = parse_int(getattr(line, "purchase_price", 0))
+        sales_amount = purchase_price * sales_qty if sales_qty > 0 and purchase_price > 0 else source_sales_amount
         if sales_qty > 0 and price_history.get(sku) and master_unit_price > 0:
             sales_amount = master_unit_price * sales_qty
-        elif sales_qty > 0 and sales_amount <= 0:
-            sales_amount = parse_int(getattr(line, "purchase_price", 0)) * sales_qty
         if sales_qty > 0 and sales_amount <= 0 and master_unit_price > 0:
             sales_amount = master_unit_price * sales_qty
         if sales_qty <= 0 and sales_amount <= 0:
