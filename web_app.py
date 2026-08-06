@@ -1143,6 +1143,11 @@ SALES_PAGE = """<!DOCTYPE html>
           }
         });
         section.style.display = monthSummary.rows ? "" : "none";
+        if (monthSummary.rows && summaryMonth) {
+          section.classList.remove("is-collapsed");
+          var monthToggle = section.querySelector(".summary-month-toggle");
+          if (monthToggle) monthToggle.textContent = "숨기기";
+        }
         var vat = Math.round(monthSummary.amount / 1.1);
         var budget = Math.round(vat * 0.035);
         section.querySelectorAll(".summary-month-po").forEach(function(node) { node.textContent = monthSummary.po.toLocaleString("ko-KR"); });
@@ -1273,6 +1278,11 @@ SALES_PAGE = """<!DOCTYPE html>
       document.querySelectorAll('[data-lookup-group="' + group + '"] input, [data-lookup-group="' + group + '"] select').forEach(function(input) {
         input.value = "";
       });
+      if (group === "summary") {
+        var summaryLookup = document.querySelector('[data-lookup-group="summary"]');
+        var summaryMonth = document.getElementById("summary-month");
+        if (summaryMonth && summaryLookup) summaryMonth.value = summaryLookup.dataset.defaultMonth || "";
+      }
       applyLookups();
     }
     function confirmExactDelete(label, expected) {
@@ -1623,9 +1633,9 @@ SALES_PAGE = """<!DOCTYPE html>
             </div>
           </div>
           <div id="monthly-summary-content" class="collapsible-content">
-          <div class="lookup-row summary-lookup" data-lookup-group="summary">
+          <div class="lookup-row summary-lookup" data-lookup-group="summary" data-default-month="{summary_default_month}">
             <label>조회월
-              <input id="summary-month" type="month">
+              <input id="summary-month" type="month" value="{summary_default_month}">
             </label>
             <label>시작일
               <input id="summary-from" type="date">
@@ -3510,6 +3520,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         po_detail_rows = []
     current_month = datetime.now().strftime("%Y-%m")
+    summary_default_month = current_month
     visible_detail_rows = detail_rows
     visible_po_detail_rows = po_detail_rows if folder_mode else []
     sales_price_edits = load_sales_price_edits()
@@ -3523,6 +3534,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         for day, qty, amount, po_count in summary_rows:
             monthly_summary[str(day)[:7]].append((str(day), qty, amount, po_count))
         latest_summary_month = max(monthly_summary.keys())
+        summary_default_month = latest_summary_month
         summary_parts = []
         for month in sorted(monthly_summary.keys(), reverse=True):
             rows_for_month = sorted(monthly_summary[month], key=lambda row: row[0])
@@ -3648,6 +3660,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{page_sub}", page_sub)
         .replace("{detail_title}", detail_title)
         .replace("{current_month}", current_month)
+        .replace("{summary_default_month}", summary_default_month)
         .replace("{sales_active}", "active" if not folder_mode else "")
         .replace("{folders_active}", "active" if folder_mode else "")
         .replace("{folder_filter_class}", "" if folder_mode else "not-shown")
