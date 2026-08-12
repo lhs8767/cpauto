@@ -985,6 +985,34 @@ SALES_PAGE = """<!DOCTYPE html>
       link.remove();
       URL.revokeObjectURL(link.href);
     }
+    function downloadYearSales() {
+      var table = document.querySelector(".year-table");
+      if (!table) {
+        alert("다운로드할 연도총매출 자료가 없습니다.");
+        return;
+      }
+      recalcYearScreen();
+      var exportRows = Array.from(table.querySelectorAll("tr")).map(function(row) {
+        var tag = row.closest("thead") ? "th" : "td";
+        var cells = Array.from(row.children).map(function(cell) {
+          var input = cell.querySelector("input");
+          var value = input ? input.value : cell.textContent.trim();
+          return "<" + tag + ">" + excelCell(value) + "</" + tag + ">";
+        }).join("");
+        return "<tr>" + cells + "</tr>";
+      }).join("");
+      var year = new Date().getFullYear();
+      var workbook = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:x='urn:schemas-microsoft-com:office:excel'><head><meta charset='UTF-8'></head><body>" +
+        "<h3>" + year + "년 연도총매출</h3><table border='1'>" + exportRows + "</table></body></html>";
+      var blob = new Blob(["\ufeff", workbook], { type: "application/vnd.ms-excel;charset=utf-8" });
+      var link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = year + "년_연도총매출_" + new Date().toISOString().slice(0, 10) + ".xls";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+    }
     function recalcSalesScreen() {
       var dayTotals = {};
       var monthTotals = {};
@@ -1554,6 +1582,7 @@ SALES_PAGE = """<!DOCTYPE html>
             <span>연도총매출</span>
             <div class="panel-actions">
               <span style="font-size:12px;color:#667085;">매출/VAT 별도/광고비예산/성장장려금은 월매출과 기초자료에서 자동 반영</span>
+              <button class="btn" type="button" onclick="downloadYearSales()">연도총매출 엑셀 다운로드</button>
               <button class="toggle-btn" type="button" onclick="toggleSection('year-sales-content', this)">숨기기</button>
             </div>
           </div>
