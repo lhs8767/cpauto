@@ -2554,15 +2554,19 @@ def save_master_form(form: cgi.FieldStorage) -> int:
     return changed
 
 
-def update_master_amounts_from_lines(lines) -> int:
+def update_master_amounts_from_lines(lines) -> tuple[int, list[dict[str, str]]]:
     master_path = get_saved_master_path()
     if master_path is None:
-        return 0
+        return 0, []
 
     price_by_sku: dict[str, int] = {}
+    line_by_sku: dict[str, object] = {}
     for line in lines:
         sku = str(line.sku_id or "").strip()
-        if not sku or sku in price_by_sku:
+        if not sku:
+            continue
+        line_by_sku.setdefault(sku, line)
+        if sku in price_by_sku:
             continue
         prefer_inbound = has_inbound_sales_data(lines)
         sales_qty = get_sales_qty(line, prefer_inbound)
@@ -2576,15 +2580,15 @@ def update_master_amounts_from_lines(lines) -> int:
         if unit_price > 0:
             price_by_sku[sku] = unit_price
 
-    if not price_by_sku:
-        return 0
-
     wb = load_workbook(master_path)
     ws = wb.active
     cols = find_master_columns(ws)
     changed = 0
+    existing_rows: dict[str, int] = {}
     for row in range(2, ws.max_row + 1):
         sku = str(ws.cell(row, cols["sku"]).value or "").strip()
+        if sku:
+            existing_rows[sku] = row
         if sku not in price_by_sku:
             continue
         current_amount = parse_int(ws.cell(row, cols["amount"]).value)
@@ -2593,9 +2597,106 @@ def update_master_amounts_from_lines(lines) -> int:
         ws.cell(row, cols["amount"]).value = price_by_sku[sku]
         changed += 1
 
+    new_items: list[dict[str, str]] = []
+    for sku, line in line_by_sku.items():
+        if sku in existing_rows:
+            continue
+        row = ws.max_row + 1
+        product_name = str(getattr(line, "product_name", "") or "").strip()
+        barcode = str(getattr(line, "barcode", "") or "").strip()
+        ws.cell(row, cols["sku"]).value = sku
+        ws.cell(row, cols["name"]).value = product_name
+        ws.cell(row, cols["amount"]).value = price_by_sku.get(sku, 0)
+        ws.cell(row, cols["simple_no"]).value = ""
+        ws.cell(row, cols["width_mm"]).value = ""
+        ws.cell(row, cols["depth_mm"]).value = ""
+        ws.cell(row, cols["height_mm"]).value = ""
+        ws.cell(row, cols["weight_kg"]).value = ""
+        ws.cell(row, cols["unavailable"]).value = ""
+        if cols["barcode"]:
+            ws.cell(row, cols["barcode"]).value = barcode
+        existing_rows[sku] = row
+        changed += 1
+        new_items.append({"sku": sku, "name": product_name})
+
     if changed:
         wb.save(master_path)
+        backup_master_file_to_supabase(master_path)
+    return changed - len(new_items), new_items
+
+
+def save_new_master_dimensions(items: list[dict[str, object]]) -> int:
+    master_path = get_saved_master_path()
+    if master_path is None:
+        raise ValueError("저장된 기초자료가 없습니다.")
+    wb = load_workbook(master_path)
+    ws = wb.active
+    cols = find_master_columns(ws)
+    rows_by_sku = {
+        str(ws.cell(row, cols["sku"]).value or "").strip(): row
+        for row in range(2, ws.max_row + 1)
+    }
+    changed = 0
+    for item in items:
+        sku = str(item.get("sku", "") or "").strip()
+        row = rows_by_sku.get(sku)
+        if not row:
+            continue
+        values = {
+            "width_mm": item.get("width_mm", ""),
+            "depth_mm": item.get("depth_mm", ""),
+            "height_mm": item.get("height_mm", ""),
+            "weight_kg": item.get("weight_kg", ""),
+        }
+        for key, raw_value in values.items():
+            value = str(raw_value or "").replace(",", "").strip()
+            if not value or not re.fullmatch(r"\d+(?:\.\d+)?", value) or float(value) <= 0:
+                raise ValueError("가로·세로·높이·무게를 모두 0보다 큰 숫자로 입력해주세요.")
+            numeric_value: int | float = float(value)
+            if numeric_value.is_integer():
+                numeric_value = int(numeric_value)
+            ws.cell(row, cols[key]).value = numeric_value
+        changed += 1
+    if changed:
+        wb.save(master_path)
+        backup_master_file_to_supabase(master_path)
     return changed
+
+
+def render_new_master_popup(items: list[dict[str, str]]) -> str:
+    unique_items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        sku = str(item.get("sku", "") or "").strip()
+        if not sku or sku in seen:
+            continue
+        seen.add(sku)
+        unique_items.append({"sku": sku, "name": str(item.get("name", "") or "").strip()})
+    if not unique_items:
+        return ""
+    rows = []
+    for item in unique_items:
+        sku = html.escape(item["sku"], quote=True)
+        name = html.escape(item["name"] or "상품명 없음")
+        rows.append(
+            f'<div class="new-master-row" data-sku="{sku}"><div class="new-master-product"><b>{sku}</b><span>{name}</span></div>'
+            '<label>가로(mm)<input data-field="width_mm" inputmode="decimal" required></label>'
+            '<label>세로(mm)<input data-field="depth_mm" inputmode="decimal" required></label>'
+            '<label>높이(mm)<input data-field="height_mm" inputmode="decimal" required></label>'
+            '<label>무게(kg)<input data-field="weight_kg" inputmode="decimal" required></label></div>'
+        )
+    return f'''<div id="new-master-modal" class="new-master-modal" role="dialog" aria-modal="true">
+      <div class="new-master-card"><div class="new-master-title"><div><h2>새 상품 크기와 무게 입력</h2><p>새 상품은 기초자료에 자동 등록되었습니다. 아래 정보만 입력해주세요.</p></div><button type="button" id="new-master-close">나중에 입력</button></div>
+      <div class="new-master-list">{"".join(rows)}</div><div id="new-master-error"></div>
+      <div class="new-master-actions"><button type="button" id="new-master-save">기초자료에 저장</button></div></div></div>
+    <style>.new-master-modal{{position:fixed;inset:0;z-index:9999;background:rgba(15,35,55,.48);display:flex;align-items:center;justify-content:center;padding:24px}}.new-master-card{{width:min(1050px,96vw);max-height:88vh;overflow:auto;background:#fff;border-radius:16px;box-shadow:0 18px 60px rgba(0,0,0,.25);padding:24px}}.new-master-title{{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}}.new-master-title h2{{margin:0 0 6px;color:#123b65}}.new-master-title p{{margin:0 0 18px;color:#60748a}}.new-master-title button{{border:1px solid #b9c9da;background:#fff;color:#31516e;border-radius:8px;padding:9px 13px;font-weight:700}}.new-master-row{{display:grid;grid-template-columns:minmax(250px,2fr) repeat(4,minmax(105px,1fr));gap:10px;align-items:end;padding:13px 0;border-top:1px solid #dbe5ef}}.new-master-product{{display:flex;flex-direction:column;gap:4px;min-width:0}}.new-master-product span{{color:#52687d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.new-master-row label{{font-size:12px;color:#496077;font-weight:700}}.new-master-row input{{display:block;width:100%;box-sizing:border-box;margin-top:5px;padding:9px;border:1px solid #b9cce0;border-radius:7px;text-align:right}}.new-master-actions{{display:flex;justify-content:flex-end;margin-top:18px}}#new-master-save{{border:0;border-radius:9px;background:#1d5686;color:#fff;padding:11px 22px;font-weight:800}}#new-master-error{{color:#c62828;font-weight:700;margin-top:10px}}@media(max-width:760px){{.new-master-row{{grid-template-columns:1fr 1fr}}.new-master-product{{grid-column:1/-1}}}}</style>
+    <script>(()=>{{const modal=document.getElementById('new-master-modal'),err=document.getElementById('new-master-error');document.getElementById('new-master-close').onclick=()=>modal.remove();document.getElementById('new-master-save').onclick=async()=>{{err.textContent='';const items=[];let invalid=false;modal.querySelectorAll('.new-master-row').forEach(row=>{{const item={{sku:row.dataset.sku}};row.querySelectorAll('input').forEach(input=>{{item[input.dataset.field]=input.value.trim();if(!input.value.trim()||Number(input.value.replaceAll(',',''))<=0)invalid=true;}});items.push(item);}});if(invalid){{err.textContent='가로·세로·높이·무게를 모두 입력해주세요.';return;}}try{{const response=await fetch('/master/new-items/details/save',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{items}})}});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.message||'저장하지 못했습니다.');alert(result.message);modal.remove();}}catch(error){{err.textContent=error.message;}}}};}})();</script>'''
+
+
+def inject_before_body_end(page: str, fragment: str) -> str:
+    if not fragment:
+        return page
+    return page.replace("</body>", fragment + "</body>", 1)
 
 
 def get_master_amounts_by_sku() -> dict[str, int]:
@@ -4224,7 +4325,7 @@ def render_check_page(message: str = "", result: str = "", date_from: str = "", 
     )
 
 
-def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
+def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None, list[dict[str, str]]]:
     po_items = form["sales_po_files"] if "sales_po_files" in form else None
     if po_items is None:
         raise ValueError("매출확인용 PO 파일을 올려주세요.")
@@ -4254,7 +4355,7 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
     if not all_lines:
         raise ValueError("PO 안에서 상품 내역을 찾지 못했습니다.")
 
-    filled_amounts = update_master_amounts_from_lines(all_lines)
+    filled_amounts, new_items = update_master_amounts_from_lines(all_lines)
     line_count, total_amount = update_monthly_sales(all_lines)
     prefer_inbound = has_inbound_sales_data(all_lines)
     total_qty = sum(get_sales_qty(line, prefer_inbound) for line in all_lines)
@@ -4264,7 +4365,7 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None]:
     return (
         f"매출확인용으로 저장했습니다. PO {file_count}개, 상품 줄 {line_count}개, "
         f"총 수량 {total_qty:,}개, 납품상품 합계금액 {total_amount:,}원입니다.{amount_message}{date_message}"
-    ), (uploaded_months[-1] if uploaded_months else None)
+    ), (uploaded_months[-1] if uploaded_months else None), new_items
 
 
 def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
@@ -4473,14 +4574,18 @@ class BonnieHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
 
-    def sales_folders_location(self, month: str = "") -> str:
+    def sales_folders_location(self, month: str = "", new_items: list[dict[str, str]] | None = None) -> str:
         selected_month = month.strip()
         if not re.fullmatch(r"\d{4}-\d{2}", selected_month):
             referer = self.headers.get("Referer", "")
             selected_month = parse_qs(urlparse(referer).query).get("month", [""])[-1]
+        params: list[str] = []
         if re.fullmatch(r"\d{4}-\d{2}", selected_month):
-            return f"/sales/folders?month={quote(selected_month)}"
-        return "/sales/folders"
+            params.append(f"month={quote(selected_month)}")
+        new_skus = [str(item.get("sku", "")).strip() for item in (new_items or []) if str(item.get("sku", "")).strip()]
+        if new_skus:
+            params.append(f"new_skus={quote(','.join(new_skus))}")
+        return "/sales/folders" + ("?" + "&".join(params) if params else "")
 
     def session_cookie(self, token: str) -> str:
         secure = "; Secure" if self.COOKIE_SECURE else ""
@@ -4604,7 +4709,22 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if parsed.path == "/sales/folders":
             if self.require_permission("sales") is None:
                 return
-            self.send_html(self.decorate_page(render_sales_page(folder_mode=True)))
+            page = self.decorate_page(render_sales_page(folder_mode=True))
+            new_skus = [value.strip() for value in parse_qs(parsed.query).get("new_skus", [""])[-1].split(",") if value.strip()]
+            if new_skus:
+                master_path = get_saved_master_path()
+                items: list[dict[str, str]] = []
+                if master_path is not None:
+                    wb = load_workbook(master_path, data_only=True)
+                    ws = wb.active
+                    cols = find_master_columns(ws)
+                    wanted = set(new_skus)
+                    for row in range(2, ws.max_row + 1):
+                        sku = str(ws.cell(row, cols["sku"]).value or "").strip()
+                        if sku in wanted:
+                            items.append({"sku": sku, "name": str(ws.cell(row, cols["name"]).value or "").strip()})
+                page = inject_before_body_end(page, render_new_master_popup(items))
+            self.send_html(page)
             return
 
         if parsed.path == "/sales/download":
@@ -4705,6 +4825,20 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     return
                 self.handle_master_save()
                 return
+            if path == "/master/new-items/details/save":
+                if self.require_user() is None:
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0") or "0")
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    items = payload.get("items", []) if isinstance(payload, dict) else []
+                    if not isinstance(items, list) or not items:
+                        raise ValueError("저장할 새 상품이 없습니다.")
+                    changed = save_new_master_dimensions(items)
+                    self.send_json({"ok": True, "message": f"새 상품 {changed}개의 크기와 무게를 저장했습니다."})
+                except Exception as exc:
+                    self.send_json({"ok": False, "message": str(exc)}, status=400)
+                return
             if path == "/master/price-history/save":
                 if self.require_permission("master") is None:
                     return
@@ -4771,8 +4905,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if self.require_permission("po_convert") is None:
             return
         try:
-            message, link = self.handle_convert()
-            self.send_html(self.page(build_message("ok", message, link)))
+            message, link, new_items = self.handle_convert()
+            page = self.page(build_message("ok", message, link))
+            self.send_html(inject_before_body_end(page, render_new_master_popup(new_items)))
         except Exception as exc:
             self.send_html(self.page(build_message("err", f"처리 중 오류가 났습니다: {exc}")), status=500)
 
@@ -4818,8 +4953,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
             environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type},
         )
         try:
-            message, uploaded_month = handle_sales_upload(form)
-            self.send_redirect(self.sales_folders_location(uploaded_month or ""))
+            message, uploaded_month, new_items = handle_sales_upload(form)
+            self.send_redirect(self.sales_folders_location(uploaded_month or "", new_items))
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"월별납품 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=500)
 
@@ -5043,12 +5178,13 @@ class BonnieHandler(BaseHTTPRequestHandler):
 
     def handle_pallet_create_request(self) -> None:
         try:
-            message, link = self.handle_pallet_create()
-            self.send_html(self.pallet_page(build_message("ok", message, link)))
+            message, link, new_items = self.handle_pallet_create()
+            page = self.pallet_page(build_message("ok", message, link))
+            self.send_html(inject_before_body_end(page, render_new_master_popup(new_items)))
         except Exception as exc:
             self.send_html(self.pallet_page(build_message("err", f"파렛트/쉽먼트 초안 생성 중 오류가 났습니다: {exc}")), status=500)
 
-    def handle_pallet_create(self) -> tuple[str, str]:
+    def handle_pallet_create(self) -> tuple[str, str, list[dict[str, str]]]:
         content_type = self.headers.get("Content-Type", "")
         form = cgi.FieldStorage(
             fp=self.rfile,
@@ -5093,7 +5229,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             output_file = processed_dir / po_path.name.replace(".xlsx", " - 복사본.xlsx")
             all_lines.extend(create_processed_po(po_path, output_file, master))
 
-        filled_amounts = update_master_amounts_from_lines(all_lines)
+        filled_amounts, new_items = update_master_amounts_from_lines(all_lines)
         write_summary_workbook(all_lines, output_dir / "파렛트_쉽먼트_초안.xlsx")
         zip_path = work_dir / "result.zip"
         zip_dir(output_dir, zip_path)
@@ -5104,9 +5240,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
         return (
             f"파렛트/쉽먼트 초안을 만들었습니다. PO {len(po_paths)}개, 상품 줄 {len(all_lines)}개, "
             f"총 수량 {total_qty:,}개입니다. 파렛트 기준이 있는 줄은 {pallet_ready}개입니다.{amount_message}"
-        ), f"/download/{run_id}"
+        ), f"/download/{run_id}", new_items
 
-    def handle_convert(self) -> tuple[str, str]:
+    def handle_convert(self) -> tuple[str, str, list[dict[str, str]]]:
         content_type = self.headers.get("Content-Type", "")
         form = cgi.FieldStorage(
             fp=self.rfile,
@@ -5162,7 +5298,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             output_file = processed_dir / po_path.name.replace(".xlsx", " - 복사본.xlsx")
             all_lines.extend(create_processed_po(po_path, output_file, master))
 
-        filled_amounts = update_master_amounts_from_lines(all_lines)
+        filled_amounts, new_items = update_master_amounts_from_lines(all_lines)
 
         zip_path = work_dir / "result.zip"
         zip_dir(output_dir, zip_path)
@@ -5172,12 +5308,20 @@ class BonnieHandler(BaseHTTPRequestHandler):
         return (
             f"완료되었습니다. PO {len(po_paths)}개, 상품 줄 {len(all_lines)}개를 처리했습니다. "
             f"총 수량 {total_qty:,}개, 합계 금액 {total_amount:,}원입니다.{amount_message}"
-        ), f"/download/{run_id}"
+        ), f"/download/{run_id}", new_items
 
     def send_html(self, text: str, status: int = 200) -> None:
         data = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, payload: object, status: int = 200) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
