@@ -2865,7 +2865,8 @@ def update_monthly_sales(lines) -> tuple[int, int]:
         if existing_po_numbers & po_numbers and not existing_po_numbers <= po_numbers:
             needed = ", ".join(sorted(existing_po_numbers))
             raise ValueError(f"기존 자료에 PO {needed}가 한 줄로 묶여 있습니다. 정확히 재정리하려면 이 PO 원본 파일들을 한 번에 같이 올려주세요.")
-        adjusted_qty = str(ws.cell(row, 10).value or "").strip()
+        adjusted_qty_value = ws.cell(row, 10).value
+        adjusted_qty = "" if adjusted_qty_value is None else str(adjusted_qty_value).strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         for existing_po in existing_po_numbers:
             if adjusted_qty or adjusted_memo:
@@ -2985,7 +2986,8 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         source_amount = parse_int(ws.cell(row, 13).value)
         remarks = str(ws.cell(row, 9).value or "")
         row_po_no = str(ws.cell(row, 12).value or "").strip() or ", ".join(split_po_numbers(remarks))
-        adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
+        adjusted_qty_value = ws.cell(row, 10).value
+        adjusted_qty_raw = "" if adjusted_qty_value is None else str(adjusted_qty_value).strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
         master_unit_price = price_for_date(
@@ -4207,7 +4209,8 @@ def iter_sales_rows_from_ledger() -> list[tuple[str, str, str, int]]:
         sku = str(ws.cell(row, 4).value or "").strip()
         name = str(ws.cell(row, 5).value or "").strip()
         original_qty = parse_int(ws.cell(row, 6).value)
-        adjusted_qty_raw = str(ws.cell(row, 10).value or "").strip()
+        adjusted_qty_value = ws.cell(row, 10).value
+        adjusted_qty_raw = "" if adjusted_qty_value is None else str(adjusted_qty_value).strip()
         qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
         rows.append((day, sku, name, qty))
     return rows
@@ -4432,7 +4435,8 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         new_memo = form[memo_key].value.strip() if memo_key in form else ""
         new_qty = parse_int(new_qty_text, original_qty)
         adjusted_value = "" if new_qty == original_qty else new_qty
-        old_adjusted = str(ws.cell(row, 10).value or "").strip()
+        old_adjusted_value = ws.cell(row, 10).value
+        old_adjusted = "" if old_adjusted_value is None else str(old_adjusted_value).strip()
         old_memo = str(ws.cell(row, 11).value or "").strip()
         row_changes = []
         if str(adjusted_value) != old_adjusted:
