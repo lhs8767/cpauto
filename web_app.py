@@ -1413,6 +1413,15 @@ SALES_PAGE = """<!DOCTYPE html>
         input.addEventListener("input", function() { format(); recalcYearScreen(); });
       });
     }
+    function initTesterFolderToggles() {
+      document.querySelectorAll(".tester-panel details[data-month]").forEach(function(folder) {
+        var label = folder.querySelector(".tester-toggle-label");
+        if (!label) return;
+        function sync() { label.textContent = folder.open ? "숨기기" : "펼치기"; }
+        sync();
+        folder.addEventListener("toggle", sync);
+      });
+    }
     function applyFolderYearFilter() {
       var select = document.getElementById("folder-year-select");
       if (!select) return;
@@ -1499,6 +1508,7 @@ SALES_PAGE = """<!DOCTYPE html>
       initResizableTables();
       syncBlankDateInputs();
       initTesterCommaInputs();
+      initTesterFolderToggles();
       initFolderYearFilter();
       document.querySelectorAll(".qty-input, .memo-input, .locked-price-input").forEach(function(input) {
         input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
@@ -3300,9 +3310,9 @@ def render_tester_files() -> str:
         for item in month_items:
             file_id = urllib.parse.quote(str(item.get("id", "")))
             rows.append(
-                '<div style="display:grid;grid-template-columns:minmax(0,1fr) 150px 90px 70px;gap:10px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
-                f'<span>{html.escape(str(item.get("name", "")))}</span>'
-                f'<span style="text-align:right;font-weight:800;">{int(item.get("amount", 0)):,}원</span>'
+                '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:9px 10px;border-top:1px solid #e5eaf1;font-size:13px;">'
+                f'<span style="min-width:260px;max-width:620px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{html.escape(str(item.get("name", "")))}</span>'
+                f'<span style="font-weight:800;margin-left:4px;">{int(item.get("amount", 0)):,}원</span>'
                 f'<a class="btn secondary" style="padding:7px 9px;text-align:center;" href="/sales/tester/download?id={file_id}">원본 받기</a>'
                 f'<form method="post" action="/sales/tester/delete" onsubmit="return confirm(\'이 체험단 원본과 반영 금액을 삭제할까요?\');">'
                 f'<input type="hidden" name="file_id" value="{file_id}">'
@@ -3311,7 +3321,8 @@ def render_tester_files() -> str:
         folders.append(
             f'<details data-month="{html.escape(month, quote=True)}" style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
             '<summary style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 13px;background:#eef5fb;color:#173f68;cursor:pointer;font-size:14px;font-weight:900;">'
-            f'<span>{html.escape(month)} 체험단</span><span>{month_total:,}원 · {len(month_items)}개</span></summary>'
+            f'<span>{html.escape(month)} 체험단</span><span style="display:flex;align-items:center;gap:10px;"><span>{month_total:,}원 · {len(month_items)}개</span>'
+            '<span class="tester-toggle-label" style="display:inline-block;min-width:48px;padding:6px 10px;border-radius:6px;background:#1d5686;color:#fff;text-align:center;font-size:12px;">펼치기</span></span></summary>'
             + "".join(rows) + "</details>"
         )
     return '<div style="display:grid;gap:8px;">' + "".join(folders) + "</div>"
