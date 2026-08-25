@@ -3198,9 +3198,38 @@ def load_tester_files_meta() -> list[dict[str, object]]:
         return []
     try:
         value = json.loads(TESTER_FILES_META_PATH.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
+        items = value if isinstance(value, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+    changed = False
+    affected_months: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or item.get("amount_parser_version") == 2:
+            continue
+        stored_path = TESTER_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+        file_key = str(item.get("file_key", ""))
+        if file_key and not stored_path.exists():
+            restore_file_from_supabase(file_key, stored_path)
+        if not stored_path.exists():
+            continue
+        try:
+            month, amount = parse_tester_workbook(stored_path.read_bytes(), str(item.get("name", "")))
+        except Exception:
+            continue
+        item["month"] = month
+        item["amount"] = amount
+        item["amount_parser_version"] = 2
+        affected_months.add(month)
+        changed = True
+    if changed:
+        save_tester_files_meta(items)
+        manual = load_year_manual()
+        for month in affected_months:
+            manual.setdefault(month, {})["tester"] = str(
+                sum(int(item.get("amount", 0)) for item in items if str(item.get("month", "")) == month)
+            )
+        save_year_manual_data(manual)
+    return items
 
 
 def save_tester_files_meta(items: list[dict[str, object]]) -> None:
@@ -3229,7 +3258,11 @@ def parse_tester_workbook(file_bytes: bytes, filename: str) -> tuple[str, int]:
                     if norm_header(cell.value) != "총진행금액":
                         continue
                     for next_cell in row[index + 1:index + 4]:
-                        amount = parse_int(next_cell.value)
+                        raw_amount = next_cell.value
+                        try:
+                            amount = int(round(float(str(raw_amount).replace(",", "").replace("원", "").strip())))
+                        except (TypeError, ValueError):
+                            amount = 0
                         if amount > 0:
                             return month, amount
     finally:
@@ -3257,6 +3290,7 @@ def save_uploaded_tester_files(items: list[tuple[str, bytes]]) -> tuple[int, lis
             "file_key": file_key,
             "month": month,
             "amount": amount,
+            "amount_parser_version": 2,
             "uploaded_at": datetime.now().isoformat(timespec="seconds"),
         })
         affected_months.add(month)
