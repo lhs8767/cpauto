@@ -3320,9 +3320,10 @@ def render_tester_files() -> str:
             )
         folders.append(
             f'<details data-month="{html.escape(month, quote=True)}" style="border:1px solid #dbe4ef;border-radius:8px;background:#fff;overflow:hidden;">'
-            '<summary style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 13px;background:#eef5fb;color:#173f68;cursor:pointer;font-size:14px;font-weight:900;">'
-            f'<span>{html.escape(month)} 체험단</span><span style="display:flex;align-items:center;gap:10px;"><span>{month_total:,}원 · {len(month_items)}개</span>'
-            '<span class="tester-toggle-label" style="display:inline-block;min-width:48px;padding:6px 10px;border-radius:6px;background:#1d5686;color:#fff;text-align:center;font-size:12px;">펼치기</span></span></summary>'
+            '<summary style="display:flex;justify-content:flex-start;align-items:center;gap:10px;padding:11px 13px;background:#eef5fb;color:#173f68;cursor:pointer;font-size:14px;font-weight:900;">'
+            f'<span>{html.escape(month)} 체험단</span>'
+            '<span class="tester-toggle-label" style="display:inline-block;min-width:48px;padding:6px 10px;border-radius:6px;background:#1d5686;color:#fff;text-align:center;font-size:12px;">펼치기</span>'
+            f'<span style="color:#385b7c;">{month_total:,}원 · {len(month_items)}개</span></summary>'
             + "".join(rows) + "</details>"
         )
     return '<div style="display:grid;gap:8px;">' + "".join(folders) + "</div>"
