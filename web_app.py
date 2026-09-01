@@ -93,8 +93,8 @@ def supabase_request(method: str, path: str, body: object | None = None) -> obje
         return None
 
 
-def restore_file_from_supabase(file_key: str, target_path: Path) -> None:
-    if target_path.exists():
+def restore_file_from_supabase(file_key: str, target_path: Path, force: bool = False) -> None:
+    if target_path.exists() and not force:
         return
     rows = supabase_request(
         "GET",
@@ -119,11 +119,11 @@ def backup_file_to_supabase(file_key: str, source_path: Path) -> None:
     supabase_request("POST", "/rest/v1/app_files?on_conflict=file_key", body)
 
 
-def restore_sales_files_from_supabase() -> None:
-    restore_file_from_supabase("sales_ledger", SALES_LEDGER_PATH)
-    restore_file_from_supabase("monthly_sales", MONTHLY_SALES_PATH)
-    restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH)
-    restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
+def restore_sales_files_from_supabase(force: bool = False) -> None:
+    restore_file_from_supabase("sales_ledger", SALES_LEDGER_PATH, force=force)
+    restore_file_from_supabase("monthly_sales", MONTHLY_SALES_PATH, force=force)
+    restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH, force=force)
+    restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH, force=force)
 
 
 def backup_sales_files_to_supabase() -> None:
@@ -2836,7 +2836,7 @@ def find_uploaded_sales_po_files() -> list[Path]:
 
 def ensure_monthly_sales_book():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    restore_sales_files_from_supabase()
+    restore_sales_files_from_supabase(force=True)
     headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모", "PO번호", "원본발주금액"]
     if SALES_LEDGER_PATH.exists():
         wb = load_workbook(SALES_LEDGER_PATH)
@@ -3691,6 +3691,7 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
+    restore_sales_files_from_supabase(force=True)
     if folder_mode:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         _po_summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
@@ -4759,7 +4760,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if parsed.path == "/sales/folders":
             if self.require_permission("sales") is None:
                 return
-            page = self.decorate_page(render_sales_page(folder_mode=True))
+            saved_count = parse_int(parse_qs(parsed.query).get("saved", ["0"])[-1])
+            page_message = build_message(
+                "ok",
+                f"수량/메모/단가 수정 {saved_count}개 항목을 저장하고 합계금액을 다시 계산했습니다.",
+            ) if saved_count else ""
+            page = self.decorate_page(render_sales_page(page_message, folder_mode=True))
             new_skus = [value.strip() for value in parse_qs(parsed.query).get("new_skus", [""])[-1].split(",") if value.strip()]
             if new_skus:
                 master_path = get_saved_master_path()
@@ -5075,7 +5081,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
         try:
             user = self.current_user() or {}
             changed = save_sales_detail_form(form, str(user.get("username", "알 수 없음")))
-            self.send_redirect(self.sales_folders_location())
+            location = self.sales_folders_location()
+            separator = "&" if "?" in location else "?"
+            self.send_redirect(f"{location}{separator}saved={changed}")
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"수량/메모 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
 
