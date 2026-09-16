@@ -473,7 +473,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <aside class="side">
       <div class="logo"><div class="logo-mark">B</div><div>보니애가구<br><span style="font-size:13px;font-weight:500;color:#b8c8d9;">업무 시스템</span></div></div>
       <div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div>
-      <div class="nav-item active" onclick="location.href='/'">PO변환</div>
+      <div class="nav-item active" onclick="location.href='/convert'">PO변환</div>
       <div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div>
       <div class="nav-item" onclick="location.href='/check'">수량검수</div>
       <div class="nav-item" onclick="location.href='/sales'">매출확인용</div>
@@ -589,7 +589,7 @@ PALLET_PAGE = """<!DOCTYPE html>
     <aside class="side">
       <div class="logo"><div class="logo-mark">B</div><div>보니애가구<br><span style="font-size:13px;font-weight:500;color:#b8c8d9;">업무 시스템</span></div></div>
       <div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div>
-      <div class="nav-item" onclick="location.href='/'">PO변환</div>
+      <div class="nav-item" onclick="location.href='/convert'">PO변환</div>
       <div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div>
       <div class="nav-item" onclick="location.href='/check'">수량검수</div>
       <div class="nav-item" onclick="location.href='/sales'">매출확인용</div>
@@ -687,7 +687,7 @@ CHECK_PAGE = """<!DOCTYPE html>
     <aside class="side">
       <div class="logo"><div class="logo-mark">B</div><div>보니애가구<br><span style="font-size:13px;font-weight:500;color:#b8c8d9;">업무 시스템</span></div></div>
       <div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div>
-      <div class="nav-item" onclick="location.href='/'">PO변환</div>
+      <div class="nav-item" onclick="location.href='/convert'">PO변환</div>
       <div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div>
       <div class="nav-item active" onclick="location.href='/check'">수량검수</div>
       <div class="nav-item" onclick="location.href='/sales'">매출확인용</div>
@@ -1568,7 +1568,7 @@ SALES_PAGE = """<!DOCTYPE html>
     <aside class="side">
       <div class="logo"><div class="logo-mark">B</div><div>보니애가구<br><span style="font-size:13px;font-weight:500;color:#b8c8d9;">업무 시스템</span></div></div>
       <div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div>
-      <div class="nav-item" onclick="location.href='/'">PO변환</div>
+      <div class="nav-item" onclick="location.href='/convert'">PO변환</div>
       <div class="nav-item {folders_active}" onclick="location.href='/sales/folders'">월별납품관리</div>
       <div class="nav-item" onclick="location.href='/check'">수량검수</div>
       <div class="nav-item {sales_active}" onclick="location.href='/sales'">매출확인용</div>
@@ -2054,7 +2054,7 @@ MASTER_PAGE = """<!DOCTYPE html>
     <aside class="side">
       <div class="logo"><div class="logo-mark">B</div><div>보니애가구<br><span style="font-size:13px;font-weight:500;color:#b8c8d9;">업무 시스템</span></div></div>
       <div class="nav-item active" onclick="location.href='/master'">쿠팡 기초자료 관리</div>
-      <div class="nav-item" onclick="location.href='/'">PO변환</div>
+      <div class="nav-item" onclick="location.href='/convert'">PO변환</div>
       <div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div>
       <div class="nav-item" onclick="location.href='/check'">수량검수</div>
       <div class="nav-item" onclick="location.href='/sales'">매출확인용</div>
@@ -4728,6 +4728,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/":
+            if self.require_permission("sales") is None:
+                return
+            self.send_redirect("/sales/folders")
+            return
+
+        if parsed.path == "/convert":
             if self.require_permission("po_convert") is None:
                 return
             self.send_html(self.page())
@@ -4849,7 +4855,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if token is None:
                 self.send_html(login_page("아이디 또는 비밀번호가 맞지 않습니다."), status=401)
                 return
-            self.send_redirect("/", [self.session_cookie(token)])
+            self.send_redirect("/sales/folders", [self.session_cookie(token)])
             return
 
         if path != "/convert":
