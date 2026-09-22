@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,6 +40,7 @@ SALES_LEDGER_PATH = DATA_DIR / "_월매출_내부자료.xlsx"
 YEAR_MANUAL_PATH = DATA_DIR / "연도총매출_수기입력.json"
 SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
 SALES_PRICE_EDITS_PATH = DATA_DIR / "납품단가_수정이력.json"
+SALES_PO_UPLOADS_PATH = DATA_DIR / "납품PO_업로드이력.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
@@ -124,6 +125,7 @@ def restore_sales_files_from_supabase(force: bool = False) -> None:
     restore_file_from_supabase("monthly_sales", MONTHLY_SALES_PATH, force=force)
     restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH, force=force)
     restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH, force=force)
+    restore_file_from_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH, force=force)
 
 
 def backup_sales_files_to_supabase() -> None:
@@ -131,6 +133,7 @@ def backup_sales_files_to_supabase() -> None:
     backup_file_to_supabase("monthly_sales", MONTHLY_SALES_PATH)
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
     backup_file_to_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
+    backup_file_to_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH)
 
 
 def load_sales_confirmations() -> dict[str, object]:
@@ -824,6 +827,8 @@ SALES_PAGE = """<!DOCTYPE html>
     .price-audit div { margin-top:3px; line-height:1.35; }
     .changed, .changed input { color:#c1121f; font-weight:800; }
     .detail-row.amount-mismatch td, .detail-row.amount-mismatch td input, .detail-row.amount-mismatch td button, .detail-row.amount-mismatch td summary { color:#c1121f !important; font-weight:800; }
+    .po-upload-link { border:0; padding:0; background:none; color:inherit; font:inherit; cursor:pointer; text-decoration:underline; text-decoration-style:dotted; text-underline-offset:3px; }
+    .po-upload-link:hover, .po-upload-link:focus-visible { color:#1f4e79; text-decoration-style:solid; }
     .save-row { display:flex; justify-content:flex-start; padding:12px 16px; border-bottom:1px solid var(--line); background:#fbfcfe; }
     .year-table th { text-align:center; background:#f8fafc; color:#344054; font-weight:800; }
     .year-table td { text-align:right; }
@@ -2824,6 +2829,33 @@ def split_po_numbers(value: object) -> list[str]:
     return parts
 
 
+def load_sales_po_uploads() -> dict[str, dict[str, str]]:
+    restore_file_from_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH, force=True)
+    if not SALES_PO_UPLOADS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SALES_PO_UPLOADS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def render_po_upload_links(value: object, uploads: dict[str, dict[str, str]]) -> str:
+    links = []
+    for po_no in split_po_numbers(value):
+        record = uploads.get(po_no, {})
+        uploaded_at = str(record.get("uploaded_at", "")) if isinstance(record, dict) else ""
+        label = uploaded_at.replace("T", " ") if uploaded_at else "업로드 날짜 기록 없음"
+        message = f"PO {po_no}\n웹페이지 업로드: {label}"
+        links.append(
+            f'<button type="button" class="po-upload-link" '
+            f'onclick="alert(this.dataset.message)" '
+            f'data-message="{html.escape(message, quote=True)}" '
+            f'title="업로드 날짜 확인">{html.escape(po_no)}</button>'
+        )
+    return ", ".join(links) if links else html.escape(str(value))
+
+
 def find_uploaded_sales_po_files() -> list[Path]:
     if not RUNS_DIR.exists():
         return []
@@ -3692,6 +3724,7 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     restore_sales_files_from_supabase(force=True)
+    po_uploads = load_sales_po_uploads()
     if folder_mode:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         _po_summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
@@ -3804,7 +3837,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                                 f"<td>{html.escape(str(name))}</td>"
                                 f'<td class="{manual_class.strip()}"><input class="qty-input" type="number" min="0" step="1" '
                                 f'name="qty_{row_no}" value="{qty}"></td>'
-                                f'<td>{price_editor}</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
+                                f'<td>{price_editor}</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{render_po_upload_links(remarks, po_uploads)}</td>'
                                 f'<td class="{manual_class.strip()}"><input class="memo-input" type="text" name="memo_{row_no}" value="{html.escape(str(memo), quote=True)}" '
                                 f'placeholder="수정 사유"></td>'
                                 f'<td><button class="delete-btn" type="submit" formaction="/sales/delete" name="delete_row" value="{row_no}" onclick="return confirm(\'이 상품 줄을 삭제할까요?\')">삭제</button></td></tr>'
@@ -3814,7 +3847,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                                 f'<tr class="detail-row{mismatch_class}{hidden_class}{mode_hidden}" data-view-mode="sku" data-amount-mismatch="{str(bool(amount_mismatch)).lower()}" data-day="{html.escape(str(day), quote=True)}" data-month="{html.escape(str(day)[:7], quote=True)}" data-original-qty="{original_qty}" data-unit-price="{unit_price}" data-search="{html.escape((str(sku) + " " + str(name) + " " + str(remarks) + " " + str(memo)), quote=True)}">'
                                 f"<td>{html.escape(str(sku))}</td><td>{html.escape(str(name))}</td>"
                                 f'<td class="{manual_class.strip()}">{qty:,}</td>'
-                                f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{html.escape(str(remarks))}</td>'
+                                f'<td>{unit_price:,}원</td><td class="row-amount">{amount:,}원</td><td class="po-cell" data-original-po="{html.escape(str(remarks), quote=True)}">{render_po_upload_links(remarks, po_uploads)}</td>'
                                 f'<td class="{manual_class.strip()}">{html.escape(str(memo))}</td><td>조회용</td></tr>'
                             )
         detail_html = "\n".join(parts)
@@ -4388,6 +4421,7 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None, list[d
     input_dir.mkdir(parents=True, exist_ok=True)
 
     all_lines = []
+    uploaded_po_files: dict[str, str] = {}
     file_count = 0
     for item in po_items:
         if not getattr(item, "filename", ""):
@@ -4397,7 +4431,11 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None, list[d
             continue
         po_path = input_dir / name
         po_path.write_bytes(item.file.read())
-        all_lines.extend(read_po_lines(po_path))
+        file_lines = read_po_lines(po_path)
+        all_lines.extend(file_lines)
+        for line in file_lines:
+            for po_no in split_po_numbers(getattr(line, "po_no", "")):
+                uploaded_po_files[po_no] = name
         file_count += 1
 
     if file_count == 0:
@@ -4407,6 +4445,12 @@ def handle_sales_upload(form: cgi.FieldStorage) -> tuple[str, str | None, list[d
 
     filled_amounts, new_items = update_master_amounts_from_lines(all_lines)
     line_count, total_amount = update_monthly_sales(all_lines)
+    uploads = load_sales_po_uploads()
+    uploaded_at = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec="seconds")
+    for po_no, filename in uploaded_po_files.items():
+        uploads[po_no] = {"uploaded_at": uploaded_at, "filename": filename}
+    SALES_PO_UPLOADS_PATH.write_text(json.dumps(uploads, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH)
     prefer_inbound = has_inbound_sales_data(all_lines)
     total_qty = sum(get_sales_qty(line, prefer_inbound) for line in all_lines)
     amount_message = f" 기초자료 금액 {filled_amounts}건도 자동으로 채웠습니다." if filled_amounts else ""
