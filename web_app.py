@@ -1338,6 +1338,26 @@ SALES_PAGE = """<!DOCTYPE html>
       form.querySelector('input[name="delete_day"]').value = from;
       return confirmDeleteDay(from);
     }
+    function setLookupDeletePo(form) {
+      var selected = (document.getElementById("detail-po-select")?.value || "").trim();
+      var keyword = (document.getElementById("detail-keyword")?.value || "").trim();
+      var po = selected || keyword;
+      if (!/^\\d{6,}$/.test(po)) {
+        alert("PO 선택에서 번호를 고르거나 검색칸에 정확한 PO 번호를 입력해주세요.");
+        return false;
+      }
+      var matches = Array.from(document.querySelectorAll('.detail-row[data-view-mode="po"]')).filter(function(row) {
+        return (row.dataset.poList || "").split(",").map(function(value) { return value.trim(); }).includes(po);
+      });
+      if (!matches.length) {
+        alert("해당 PO의 상품 내역을 찾지 못했습니다.");
+        return false;
+      }
+      form.querySelector('input[name="delete_po"]').value = po;
+      var confirmed = confirmExactDelete("PO " + po + "의 상품 " + matches.length + "줄 전체", po);
+      if (confirmed) form.querySelector('input[name="confirm_po"]').value = po;
+      return confirmed;
+    }
     function setLookupDeleteMonth(form) {
       var from = document.getElementById("detail-from")?.value || "";
       var to = document.getElementById("detail-to")?.value || "";
@@ -1719,6 +1739,11 @@ SALES_PAGE = """<!DOCTYPE html>
             <form class="inline-delete-form" method="post" action="/sales/delete" onsubmit="return setLookupDeleteDay(this)">
               <input type="hidden" name="delete_day" value="">
               <button class="delete-btn" type="submit">조회 일자 삭제</button>
+            </form>
+            <form class="inline-delete-form" method="post" action="/sales/delete" onsubmit="return setLookupDeletePo(this)">
+              <input type="hidden" name="delete_po" value="">
+              <input type="hidden" name="confirm_po" value="">
+              <button class="delete-btn" type="submit">선택 PO 삭제</button>
             </form>
             <form class="inline-delete-form" method="post" action="/sales/delete" onsubmit="return setLookupDeleteMonth(this)">
               <input type="hidden" name="delete_month" value="{current_month}">
@@ -4597,12 +4622,28 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
 
 def delete_sales_detail_form(form: cgi.FieldStorage) -> tuple[int, str]:
     wb, ws = ensure_monthly_sales_book()
+    target_po = form["delete_po"].value.strip() if "delete_po" in form else ""
     target_day = form["delete_day"].value.strip() if "delete_day" in form else ""
     target_month = form["delete_month"].value.strip() if "delete_month" in form else ""
     target_row = parse_int(form["delete_row"].value) if "delete_row" in form else 0
 
     rows_to_delete = []
-    if target_month:
+    if target_po:
+        if not re.fullmatch(r"\d{6,}", target_po):
+            raise ValueError("삭제할 PO 번호가 올바르지 않습니다.")
+        confirmed_po = form["confirm_po"].value.strip() if "confirm_po" in form else ""
+        if confirmed_po != target_po:
+            raise ValueError("PO 번호 확인이 일치하지 않아 삭제하지 않았습니다.")
+        for row in range(2, ws.max_row + 1):
+            po_numbers = split_po_numbers(ws.cell(row, 12).value or ws.cell(row, 9).value)
+            if target_po in po_numbers:
+                if len(po_numbers) != 1:
+                    raise ValueError(f"PO {target_po}와 다른 PO가 한 줄에 묶여 있습니다. 다른 PO 자료를 보호하기 위해 삭제하지 않았습니다.")
+                rows_to_delete.append(row)
+        if not rows_to_delete:
+            raise ValueError(f"PO {target_po}의 납품 상품을 찾지 못했습니다. 삭제하지 않았습니다.")
+        label = f"PO {target_po} 전체"
+    elif target_month:
         for row in range(2, ws.max_row + 1):
             if str(ws.cell(row, 1).value or "").strip().startswith(target_month):
                 rows_to_delete.append(row)
@@ -4810,11 +4851,16 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if parsed.path == "/sales/folders":
             if self.require_permission("sales") is None:
                 return
-            saved_count = parse_int(parse_qs(parsed.query).get("saved", ["0"])[-1])
+            query = parse_qs(parsed.query)
+            saved_count = parse_int(query.get("saved", ["0"])[-1])
             page_message = build_message(
                 "ok",
                 f"수량/메모/단가 수정 {saved_count}개 항목을 저장하고 합계금액을 다시 계산했습니다.",
             ) if saved_count else ""
+            deleted_po = query.get("deleted_po", [""])[-1]
+            deleted_count = parse_int(query.get("deleted_count", ["0"])[-1])
+            if re.fullmatch(r"\d{6,}", deleted_po) and deleted_count > 0:
+                page_message = build_message("ok", f"PO {deleted_po} 상품 {deleted_count}줄을 삭제하고 합계금액을 다시 계산했습니다.")
             page = self.decorate_page(render_sales_page(page_message, folder_mode=True))
             new_skus = [value.strip() for value in parse_qs(parsed.query).get("new_skus", [""])[-1].split(",") if value.strip()]
             if new_skus:
@@ -5160,7 +5206,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
         )
         try:
             deleted, label = delete_sales_detail_form(form)
-            self.send_redirect(self.sales_folders_location())
+            target_po = form["delete_po"].value.strip() if "delete_po" in form else ""
+            location = self.sales_folders_location()
+            if target_po:
+                location += ("&" if "?" in location else "?") + f"deleted_po={quote(target_po)}&deleted_count={deleted}"
+            self.send_redirect(location)
         except Exception as exc:
             self.send_html(
                 self.decorate_page(
