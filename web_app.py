@@ -1211,7 +1211,8 @@ SALES_PAGE = """<!DOCTYPE html>
       var detailKeywordNode = document.getElementById("detail-keyword");
       var detailKeyword = (detailKeywordNode?.value || "").trim().toLowerCase();
       var detailPoSelect = document.getElementById("detail-po-select");
-      var detailViewMode = document.getElementById("detail-view-mode")?.value || "sku";
+      var detailViewModeNode = document.getElementById("detail-view-mode");
+      var detailViewMode = detailViewModeNode?.value || "sku";
       function getRowPoList(row) {
         var poText = row.dataset.poList || row.querySelector(".po-cell")?.dataset.originalPo || "";
         return poText.split(",").map(function(po) { return po.trim(); }).filter(Boolean);
@@ -1245,6 +1246,12 @@ SALES_PAGE = """<!DOCTYPE html>
         detailKeyword = selectedPo.toLowerCase();
         keywordLooksPo = true;
       }
+      if (requestedPo && detailViewModeNode && detailViewMode !== "po") {
+        detailViewModeNode.value = "po";
+        detailViewMode = "po";
+        var detailSaveRow = document.getElementById("detail-save-row");
+        if (detailSaveRow) detailSaveRow.style.display = "flex";
+      }
       var visibleByDay = {};
       var visibleByMonth = {};
       document.querySelectorAll(".detail-row").forEach(function(row) {
@@ -1262,6 +1269,7 @@ SALES_PAGE = """<!DOCTYPE html>
         var displayPo = requestedPo && poList.includes(requestedPo) ? requestedPo : "";
         var poCell = row.querySelector(".po-cell");
         if (poCell) poCell.textContent = displayPo || (poCell.dataset.originalPo || poCell.textContent);
+        if (requestedPo && rowMode === "po" && poList.includes(requestedPo)) row.classList.remove("month-hidden");
         row.classList.toggle("view-hidden", rowMode !== detailViewMode);
         row.style.display = show ? "" : "none";
         if (show) {
@@ -1279,6 +1287,7 @@ SALES_PAGE = """<!DOCTYPE html>
         var rowMode = row.dataset.viewMode || "sku";
         var dayKey = row.dataset.day + "::" + rowMode;
         var total = visibleByDay[dayKey];
+        if (requestedPo && rowMode === "po" && total) row.classList.remove("month-hidden");
         row.classList.toggle("view-hidden", rowMode !== detailViewMode);
         row.style.display = total ? "" : "none";
         var totalCell = row.querySelector("[data-day-total]");
@@ -1288,6 +1297,11 @@ SALES_PAGE = """<!DOCTYPE html>
       });
       document.querySelectorAll(".month-folder").forEach(function(row) {
         var rowMode = row.dataset.viewMode || "sku";
+        if (requestedPo && rowMode === "po" && visibleByMonth[row.dataset.month + "::" + rowMode]) {
+          row.classList.remove("is-closed");
+          var toggle = row.querySelector(".toggle-btn");
+          if (toggle) toggle.textContent = "숨기기";
+        }
         row.classList.toggle("view-hidden", rowMode !== detailViewMode);
         row.style.display = visibleByMonth[row.dataset.month + "::" + rowMode] ? "" : "none";
       });
