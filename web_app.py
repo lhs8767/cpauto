@@ -40,6 +40,7 @@ SALES_LEDGER_PATH = DATA_DIR / "_월매출_내부자료.xlsx"
 YEAR_MANUAL_PATH = DATA_DIR / "연도총매출_수기입력.json"
 SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
 SALES_PRICE_EDITS_PATH = DATA_DIR / "납품단가_수정이력.json"
+SALES_ADJUSTMENTS_PATH = DATA_DIR / "납품수량_메모_수정값.json"
 SALES_PO_UPLOADS_PATH = DATA_DIR / "납품PO_업로드이력.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
@@ -125,6 +126,7 @@ def restore_sales_files_from_supabase(force: bool = False) -> None:
     restore_file_from_supabase("monthly_sales", MONTHLY_SALES_PATH, force=force)
     restore_file_from_supabase("sales_confirmations", SALES_CONFIRM_PATH, force=force)
     restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH, force=force)
+    restore_file_from_supabase("sales_adjustments", SALES_ADJUSTMENTS_PATH, force=force)
     restore_file_from_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH, force=force)
 
 
@@ -133,6 +135,7 @@ def backup_sales_files_to_supabase() -> None:
     backup_file_to_supabase("monthly_sales", MONTHLY_SALES_PATH)
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
     backup_file_to_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
+    backup_file_to_supabase("sales_adjustments", SALES_ADJUSTMENTS_PATH)
     backup_file_to_supabase("sales_po_uploads", SALES_PO_UPLOADS_PATH)
 
 
@@ -173,6 +176,23 @@ def save_sales_price_edits(data: dict[str, dict[str, object]]) -> None:
 def sales_price_edit_key(day: object, po_no: object, sku: object) -> str:
     po_text = ",".join(split_po_numbers(po_no))
     return f"{str(day).strip()}|{po_text}|{str(sku).strip()}"
+
+
+def load_sales_adjustments() -> dict[str, dict[str, object]]:
+    restore_file_from_supabase("sales_adjustments", SALES_ADJUSTMENTS_PATH)
+    if not SALES_ADJUSTMENTS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SALES_ADJUSTMENTS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_sales_adjustments(data: dict[str, dict[str, object]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SALES_ADJUSTMENTS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("sales_adjustments", SALES_ADJUSTMENTS_PATH)
 
 
 def sales_confirmation(month: str) -> dict[str, object]:
@@ -3054,6 +3074,7 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
     master_amounts = get_master_amounts_by_sku()
     price_history = load_price_history()
     price_edits = load_sales_price_edits()
+    saved_adjustments = load_sales_adjustments()
     wb = load_workbook(SALES_LEDGER_PATH, data_only=True)
     ws = wb.active
     summary = defaultdict(lambda: {"qty": 0, "amount": 0, "pos": set()})
@@ -3070,6 +3091,13 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         adjusted_qty_value = ws.cell(row, 10).value
         adjusted_qty_raw = "" if adjusted_qty_value is None else str(adjusted_qty_value).strip()
         adjusted_memo = str(ws.cell(row, 11).value or "").strip()
+        adjustment_key = sales_price_edit_key(day, row_po_no, sku)
+        saved_adjustment = saved_adjustments.get(adjustment_key, {})
+        if isinstance(saved_adjustment, dict):
+            if "qty" in saved_adjustment:
+                adjusted_qty_raw = str(parse_int(saved_adjustment.get("qty"), original_qty))
+            if "memo" in saved_adjustment:
+                adjusted_memo = str(saved_adjustment.get("memo") or "").strip()
         adjusted_qty = parse_int(adjusted_qty_raw, original_qty) if adjusted_qty_raw else original_qty
         master_unit_price = price_for_date(
             str(sku).strip(),
@@ -4541,7 +4569,9 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
     wb, ws = ensure_monthly_sales_book()
     price_edits = load_sales_price_edits()
+    saved_adjustments = load_sales_adjustments()
     price_edits_changed = False
+    adjustments_changed = False
     row_values = form["row"] if "row" in form else []
     if not isinstance(row_values, list):
         row_values = [row_values]
@@ -4568,6 +4598,11 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         old_adjusted_value = ws.cell(row, 10).value
         old_adjusted = "" if old_adjusted_value is None else str(old_adjusted_value).strip()
         old_memo = str(ws.cell(row, 11).value or "").strip()
+        day = str(ws.cell(row, 1).value or "")
+        sku = str(ws.cell(row, 4).value or "").strip()
+        po_no = str(ws.cell(row, 12).value or "").strip() or str(ws.cell(row, 9).value or "").strip()
+        adjustment_key = sales_price_edit_key(day, po_no, sku)
+        previous_adjustment = saved_adjustments.get(adjustment_key, {})
         row_changes = []
         if str(adjusted_value) != old_adjusted:
             row_changes.append({"field": f"{ws.cell(row, 4).value} 수량", "before": parse_int(old_adjusted, original_qty), "after": new_qty})
@@ -4577,9 +4612,15 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             row_changes.append({"field": f"{ws.cell(row, 4).value} 메모", "before": old_memo, "after": new_memo})
             ws.cell(row, 11).value = new_memo
             changed += 1
-        day = str(ws.cell(row, 1).value or "")
-        sku = str(ws.cell(row, 4).value or "").strip()
-        po_no = str(ws.cell(row, 12).value or "").strip() or str(ws.cell(row, 9).value or "").strip()
+        adjustment_record = {
+            "qty": new_qty,
+            "memo": new_memo,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_by": username,
+        }
+        if not isinstance(previous_adjustment, dict) or parse_int(previous_adjustment.get("qty"), original_qty) != new_qty or str(previous_adjustment.get("memo") or "").strip() != new_memo:
+            saved_adjustments[adjustment_key] = adjustment_record
+            adjustments_changed = True
         edit_key = sales_price_edit_key(day, po_no, sku)
         edit_record = price_edits.get(edit_key, {})
         original_amount = parse_int(ws.cell(row, 7).value)
@@ -4625,6 +4666,8 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             "changes": changes,
         })
     wb.save(SALES_LEDGER_PATH)
+    if adjustments_changed:
+        save_sales_adjustments(saved_adjustments)
     if price_edits_changed:
         save_sales_price_edits(price_edits)
     if audit_by_day:
@@ -4636,6 +4679,7 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
 
 def delete_sales_detail_form(form: cgi.FieldStorage) -> tuple[int, str]:
     wb, ws = ensure_monthly_sales_book()
+    saved_adjustments = load_sales_adjustments()
     target_po = form["delete_po"].value.strip() if "delete_po" in form else ""
     target_day = form["delete_day"].value.strip() if "delete_day" in form else ""
     target_month = form["delete_month"].value.strip() if "delete_month" in form else ""
@@ -4676,9 +4720,17 @@ def delete_sales_detail_form(form: cgi.FieldStorage) -> tuple[int, str]:
     else:
         raise ValueError("삭제할 일자 또는 상품 줄을 찾지 못했습니다.")
 
+    adjustment_keys_to_delete = {
+        sales_price_edit_key(ws.cell(row, 1).value, ws.cell(row, 12).value or ws.cell(row, 9).value, ws.cell(row, 4).value)
+        for row in rows_to_delete
+    }
     for row in sorted(rows_to_delete, reverse=True):
         ws.delete_rows(row, 1)
     wb.save(SALES_LEDGER_PATH)
+    if any(key in saved_adjustments for key in adjustment_keys_to_delete):
+        for key in adjustment_keys_to_delete:
+            saved_adjustments.pop(key, None)
+        save_sales_adjustments(saved_adjustments)
     write_sales_display_workbook()
     backup_sales_files_to_supabase()
     return len(rows_to_delete), label
