@@ -1440,6 +1440,33 @@ SALES_PAGE = """<!DOCTYPE html>
       form.querySelector('input[name="override_reason"]').value = reason.trim();
       return true;
     }
+    async function submitSalesAdjustments(form, event) {
+      event.preventDefault();
+      if (!prepareSalesSave(form)) return false;
+      if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+      var button = form.querySelector('button[type="submit"]');
+      if (button) { button.disabled = true; button.textContent = "저장 중..."; }
+      try {
+        var response = await fetch(form.action, {
+          method: "POST",
+          headers: {"X-Requested-With": "XMLHttpRequest"},
+          body: new FormData(form)
+        });
+        var result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.message || "저장하지 못했습니다.");
+        if (!result.changed) {
+          alert("서버에 전달된 변경 내용이 없습니다. 수정한 수량 또는 메모를 다시 확인해주세요.");
+          if (button) { button.disabled = false; button.textContent = "수량/메모/단가 저장"; }
+          return false;
+        }
+        alert("수량·메모 수정 " + result.changed + "건을 저장했습니다.");
+        window.location.href = result.location || window.location.href;
+      } catch (error) {
+        alert("저장 오류: " + error.message);
+        if (button) { button.disabled = false; button.textContent = "수량/메모/단가 저장"; }
+      }
+      return false;
+    }
     function requestPriceEdit(button) {
       var wrap = button.closest(".locked-price-wrap");
       var input = wrap.querySelector(".locked-price-input");
@@ -1569,8 +1596,13 @@ SALES_PAGE = """<!DOCTYPE html>
       initTesterCommaInputs();
       initTesterFolderToggles();
       initFolderYearFilter();
-      document.querySelectorAll(".qty-input, .memo-input, .locked-price-input").forEach(function(input) {
+      document.querySelectorAll(".qty-input, .locked-price-input").forEach(function(input) {
         input.addEventListener("input", function() { recalcSalesScreen(); updateDetailResultSummary(); });
+      });
+      document.querySelectorAll(".memo-input").forEach(function(input) {
+        input.addEventListener("input", function() {
+          input.classList.toggle("changed", input.value.trim() !== String(input.closest(".detail-row")?.dataset.savedMemo || ""));
+        });
       });
       document.querySelectorAll(".money-input").forEach(function(input) {
         input.addEventListener("input", recalcYearScreen);
@@ -1793,7 +1825,7 @@ SALES_PAGE = """<!DOCTYPE html>
             <button class="detail-download" type="button" onclick="downloadDetailResults()">검색결과 엑셀 다운로드</button>
           </div>
           <div id="detail-month-empty" style="display:none;margin:12px 16px;padding:12px;border:1px dashed #cbd9e8;border-radius:8px;background:#f8fbff;color:#667085;font-size:13px;"></div>
-          <form method="post" action="/sales/save" onsubmit="return prepareSalesSave(this)">
+          <form method="post" action="/sales/save" onsubmit="return submitSalesAdjustments(this, event)">
           <input type="hidden" name="override_reason" value="">
           <div id="detail-save-row" class="save-row"><button class="btn" type="submit">수량/메모/단가 저장</button></div><div id="mode-note" class="mode-note"><strong>보기방식 안내</strong>SKU 합계는 확인용이며, 저장/수정/삭제는 PO별 상세에서만 가능합니다.</div>
           <div class="scroll">
@@ -5245,9 +5277,16 @@ class BonnieHandler(BaseHTTPRequestHandler):
             changed = save_sales_detail_form(form, str(user.get("username", "알 수 없음")))
             location = self.sales_folders_location()
             separator = "&" if "?" in location else "?"
-            self.send_redirect(f"{location}{separator}saved={changed}")
+            saved_location = f"{location}{separator}saved={changed}"
+            if self.headers.get("X-Requested-With") == "XMLHttpRequest":
+                self.send_json({"ok": True, "changed": changed, "location": saved_location})
+            else:
+                self.send_redirect(saved_location)
         except Exception as exc:
-            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"수량/메모 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
+            if self.headers.get("X-Requested-With") == "XMLHttpRequest":
+                self.send_json({"ok": False, "message": f"수량/메모 저장 중 오류가 났습니다: {exc}"}, status=400)
+            else:
+                self.send_html(self.decorate_page(render_sales_page(build_message("err", f"수량/메모 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
 
     def handle_sales_confirm_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
