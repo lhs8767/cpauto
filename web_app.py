@@ -4612,7 +4612,6 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
     override_reason = form["override_reason"].value.strip() if "override_reason" in form else ""
     confirmation_data = load_sales_confirmations()
     confirmation_days = confirmation_data.setdefault("days", {})
-    completed_months = confirmation_data.setdefault("completed_months", [])
     audit_by_day: dict[str, list[dict[str, object]]] = defaultdict(list)
     for item in row_values:
         row = parse_int(item.value)
@@ -4680,7 +4679,10 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
                 row_changes.append({"field": f"{sku} 단가", "before": current_price, "after": new_price})
                 changed += 1
         day_record = confirmation_days.get(day, {}) if isinstance(confirmation_days, dict) else {}
-        is_confirmed = (isinstance(day_record, dict) and day_record.get("confirmed")) or day[:7] in completed_months
+        # 수정 제한은 월 전체의 과거 완료 표식이 아니라 해당 납품일자의
+        # 계산서 금액이 실제로 일치해 확인 완료된 경우에만 적용한다.
+        # 월 표식을 함께 보면 아직 입고 전인 미래 납품 건까지 잠기는 문제가 생긴다.
+        is_confirmed = bool(isinstance(day_record, dict) and day_record.get("confirmed"))
         if row_changes and is_confirmed:
             if not override_reason:
                 raise ValueError("계산서 발행 확인 완료 건을 수정하려면 수정 사유가 필요합니다.")
