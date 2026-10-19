@@ -2545,12 +2545,15 @@ def render_master_rows(master_path: Path) -> str:
         amount_flag = "1" if parse_int(amount) > 0 else "0"
         unavailable_flag = "1" if unavailable else "0"
         base_amount = parse_int(amount)
+        current_amount = price_for_date(sku, base_amount, history=price_history)
+        displayed_amount = str(current_amount) if current_amount > 0 else amount
         price_panel = render_price_history_panel(sku, base_amount, price_history.get(sku, []))
         rows.append(
             f'<tr data-unavailable="{unavailable_flag}" data-simple-no="{simple_flag}" data-amount="{amount_flag}">'
             f'<td class="sku">{html.escape(sku)}<input type="hidden" name="row" value="{row}"></td>'
             f'<td class="product">{html.escape(name)}</td>'
-            f'<td><input class="qty" name="amount_{row}" value="{html.escape(amount)}" inputmode="numeric"></td>'
+            f'<td><input class="qty" name="amount_{row}" value="{html.escape(displayed_amount)}" inputmode="numeric">'
+            f'<input type="hidden" name="displayed_amount_{row}" value="{html.escape(displayed_amount)}"></td>'
             f'<td><input class="qty" name="simple_no_{row}" value="{html.escape(simple_no)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="width_mm_{row}" value="{html.escape(width_mm)}" inputmode="numeric"></td>'
             f'<td><input class="qty" name="depth_mm_{row}" value="{html.escape(depth_mm)}" inputmode="numeric"></td>'
@@ -2614,6 +2617,7 @@ def save_master_form(form: cgi.FieldStorage) -> int:
     for item in row_values:
         row = int(item.value)
         amount_key = f"amount_{row}"
+        displayed_amount_key = f"displayed_amount_{row}"
         simple_no_key = f"simple_no_{row}"
         width_key = f"width_mm_{row}"
         depth_key = f"depth_mm_{row}"
@@ -2621,6 +2625,7 @@ def save_master_form(form: cgi.FieldStorage) -> int:
         weight_key = f"weight_kg_{row}"
         unavailable_key = f"unavailable_{row}"
         new_amount = form[amount_key].value.strip() if amount_key in form else ""
+        displayed_amount = form[displayed_amount_key].value.strip() if displayed_amount_key in form else new_amount
         new_simple_no = form[simple_no_key].value.strip() if simple_no_key in form else ""
         new_width = form[width_key].value.strip() if width_key in form else ""
         new_depth = form[depth_key].value.strip() if depth_key in form else ""
@@ -2634,7 +2639,9 @@ def save_master_form(form: cgi.FieldStorage) -> int:
         old_height = str(ws.cell(row, cols["height_mm"]).value or "").strip()
         old_weight = str(ws.cell(row, cols["weight_kg"]).value or "").strip()
         old_unavailable = "납품불가" if "납품불가" in str(ws.cell(row, cols["unavailable"]).value or "") else ""
-        if new_amount != old_amount:
+        # 단가 이력이 적용된 현재 단가를 화면에 보여주되, 사용자가 금액을
+        # 직접 고치지 않았다면 과거 기준인 기초 단가는 그대로 보존한다.
+        if new_amount != displayed_amount and new_amount != old_amount:
             ws.cell(row, cols["amount"]).value = new_amount
             changed += 1
         if new_simple_no != old_simple_no:
