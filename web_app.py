@@ -47,6 +47,8 @@ TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
 PRICE_HISTORY_PATH = DATA_DIR / "상품단가_이력.json"
 CONTRACT_MANUAL_PATH = DATA_DIR / "쿠팡계약_직접입력.json"
+CONTRACT_FILES_DIR = DATA_DIR / "쿠팡계약_원본"
+CONTRACT_FILES_META_PATH = DATA_DIR / "쿠팡계약_파일목록.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -266,6 +268,49 @@ def save_contract_manual_amount(contract_id: str, amount: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CONTRACT_MANUAL_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+
+
+def load_contract_files_meta() -> list[dict[str, str]]:
+    restore_file_from_supabase("contract_files_metadata", CONTRACT_FILES_META_PATH)
+    if not CONTRACT_FILES_META_PATH.exists():
+        return []
+    try:
+        data = json.loads(CONTRACT_FILES_META_PATH.read_text(encoding="utf-8"))
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_contract_files_meta(items: list[dict[str, str]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONTRACT_FILES_META_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_files_metadata", CONTRACT_FILES_META_PATH)
+
+
+def save_contract_upload(file_item: cgi.FieldStorage) -> dict[str, str]:
+    filename = Path(str(file_item.filename or "")).name
+    if not filename:
+        raise ValueError("올릴 계약서 파일을 선택해주세요.")
+    if Path(filename).suffix.lower() not in {".png", ".jpg", ".jpeg", ".pdf", ".xlsx", ".docx"}:
+        raise ValueError("PNG, JPG, PDF, 엑셀 또는 워드 파일만 올릴 수 있습니다.")
+    content = file_item.file.read()
+    if not content:
+        raise ValueError("파일 내용이 비어 있습니다.")
+    if len(content) > 20 * 1024 * 1024:
+        raise ValueError("파일은 20MB 이하만 올릴 수 있습니다.")
+    file_id = uuid.uuid4().hex[:12]
+    stored_name = f"{file_id}_{filename}"
+    stored_path = CONTRACT_FILES_DIR / stored_name
+    stored_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_path.write_bytes(content)
+    file_key = f"contract_file_{file_id}"
+    backup_file_to_supabase(file_key, stored_path)
+    item = {"id": file_id, "name": filename, "stored_name": stored_name, "file_key": file_key,
+            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "정리 대기"}
+    items = load_contract_files_meta()
+    items.insert(0, item)
+    save_contract_files_meta(items)
+    return item
 
 
 def price_for_date(
@@ -4839,6 +4884,25 @@ def render_contracts_page() -> str:
     </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><h1>쿠팡 계약 관리</h1><p class="intro">행사와 광고 계약의 기간과 금액을 쉬운 말로 정리한 화면입니다.</p><div class="guide">계약서 캡처나 파일을 보내주시면 기간, 실제 청구금액, VAT 여부를 정리합니다. 계약서에 없는 금액은 추측하지 않고 직접 입력할 수 있습니다.<br>전 제품 정률 할인은 할인율(1%·5% 등), 시작일·종료일, 유지기간(2개월·3개월), 비용 부담 주체와 중도해지·자동연장 조건까지 표시합니다.</div><div class="list">{"".join(parts)}</div></main></div></body></html>'''
 
 
+def render_contracts_compact_page() -> str:
+    saved, uploads = load_contract_manual_amounts(), load_contract_files_meta()
+    upload_rows = "".join(f'<div class="ur"><strong>{html.escape(str(x.get("name","")))}</strong><span>{html.escape(str(x.get("uploaded_at","")))}</span><b>{html.escape(str(x.get("status","정리 대기")))}</b><a href="/contracts/download?id={quote(str(x.get("id","")))}">원본 받기</a></div>' for x in uploads) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
+    rows = [
+      {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
+      {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 집하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
+      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"이번에 실제로 내는 돈은 550만원","facts":[("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":False},
+    ]
+    out=[]
+    for r in rows:
+        sv=saved.get(r["id"],"").strip(); amount=sv or r["amount"]; waiting="확인 필요" in amount
+        facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
+        editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
+        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{r["title"]}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{editor}</section></details>')
+    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
+    *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#172033;font-family:"Malgun Gothic",Arial,sans-serif}}.app{{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}}aside{{background:#102f4b;color:white;padding:24px 18px}}.logo{{font-size:18px;font-weight:900;margin-bottom:28px}}.logo small{{display:block;color:#b8c8d9;font-size:12px}}.nav-item{{padding:12px 13px;border-radius:8px;color:#d9e7f3;margin-bottom:6px;cursor:pointer}}.nav-item:hover,.nav-item.active{{background:rgba(255,255,255,.13);font-weight:800}}main{{padding:26px}}.wrap{{max-width:1280px;margin:auto}}h1{{margin:0 0 5px}}.sub{{margin:0 0 16px;color:#667085}}.upload{{background:white;border:1px solid #cbd9e8;border-radius:10px;padding:15px;margin-bottom:14px}}.upload h2{{margin:0 0 10px;font-size:16px}}.upload form{{display:flex;gap:8px}}.upload input{{flex:1;border:1px dashed #9eb4ca;border-radius:7px;padding:9px}}button{{border:0;border-radius:7px;background:#1f5d8f;color:white;padding:9px 15px;font-weight:900}}.ul{{margin-top:10px;border-top:1px solid #e5ebf2}}.ur{{display:grid;grid-template-columns:minmax(220px,1fr) 145px 85px 85px;gap:10px;padding:8px 3px;border-bottom:1px solid #edf1f5;font-size:12px}}.ur strong{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.ur b{{color:#965a00}}.ur a{{color:#1f5d8f;font-weight:900;text-decoration:none}}.empty{{padding:9px;color:#667085;font-size:12px}}.nums{{display:flex;gap:9px;margin-bottom:13px}}.nums div{{background:white;border:1px solid #d8e3ee;border-radius:8px;padding:10px 14px;min-width:150px}}.nums span{{display:block;color:#667085;font-size:11px}}.nums strong{{font-size:17px;color:#173f68}}.head,.row summary{{display:grid;grid-template-columns:90px minmax(230px,1fr) 190px 220px 90px 55px;gap:9px;align-items:center}}.head{{padding:7px 13px;color:#667085;font-size:11px;font-weight:900}}.row{{background:white;border:1px solid #d7e1ee;border-radius:8px;margin-bottom:8px;overflow:hidden}}.row summary{{padding:13px;cursor:pointer;list-style:none}}.row summary>b{{width:max-content;background:#1f5d8f;color:white;border-radius:5px;padding:5px 8px;font-size:11px}}.row summary>span{{color:#315b7d;font-weight:800}}.row summary>em{{font-style:normal;text-align:right;font-weight:900}}.row summary>i{{font-style:normal;text-align:center;border-radius:5px;padding:5px;font-size:11px;font-weight:900}}.wait{{background:#fff1cc;color:#8a5300}}.done{{background:#dcfae6;color:#067647}}.row summary>u{{text-decoration:none;color:#1f5d8f;font-size:11px;font-weight:900}}.row section{{padding:13px 17px;background:#f9fbfd;border-top:1px solid #e3e9f0}}.row p{{margin:0 0 8px;background:#eaf3fb;padding:10px;border-radius:6px}}.row small{{color:#52687d}}.facts{{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}}.facts div{{min-width:160px;background:white;border:1px solid #dce5ee;border-radius:6px;padding:8px}}.facts span{{display:block;color:#667085;font-size:10px}}.row section form{{display:flex;gap:8px;margin-top:10px}}.row section input{{flex:1;padding:8px;border:1px solid #b9c9da;border-radius:6px}}.note{{margin-top:13px;padding:12px;background:white;border:1px dashed #aebfd0;border-radius:7px;color:#38546e;font-size:12px}}@media(max-width:950px){{.head{{display:none}}.row summary{{grid-template-columns:85px 1fr 160px}}.row summary>i,.row summary>u{{display:none}}}}@media(max-width:700px){{.app{{grid-template-columns:1fr}}aside{{display:none}}main{{padding:14px}}.upload form{{flex-direction:column}}.ur{{grid-template-columns:1fr 80px}}.nums{{flex-wrap:wrap}}.row summary{{grid-template-columns:75px 1fr}}.row summary>span,.row summary>em{{grid-column:2;text-align:left}}}}
+    </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><div class="wrap"><h1>쿠팡 계약 관리</h1><p class="sub">계약서를 먼저 올리고, 기간과 실제 금액을 한눈에 확인하세요.</p><div class="upload"><h2>계약서 파일 올리기</h2><form method="post" action="/contracts/upload" enctype="multipart/form-data"><input type="file" name="contract_file" accept=".png,.jpg,.jpeg,.pdf,.xlsx,.docx" required><button>파일 올리기</button></form><div class="ul">{upload_rows}</div></div><div class="nums"><div><span>정리된 계약</span><strong>3건</strong></div><div><span>금액 입력 필요</span><strong>2건</strong></div><div><span>확인된 청구액</span><strong>5,500,000원</strong></div></div><div class="head"><span>구분</span><span>행사·계약명</span><span>기간</span><span style="text-align:right">실제 금액</span><span>상태</span><span></span></div>{"".join(out)}<div class="note"><b>전 제품 정률 할인</b>: 할인율(1%·5%), 기간, 유지기간(2개월·3개월), 비용 부담 주체를 함께 표시합니다.</div></div></main></div></body></html>'''
+
+
 class BonnieHandler(BaseHTTPRequestHandler):
     SESSION_COOKIE = "coupang_session"
     COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").strip() == "1"
@@ -4979,7 +5043,29 @@ class BonnieHandler(BaseHTTPRequestHandler):
         if parsed.path == "/contracts":
             if self.require_user() is None:
                 return
-            self.send_html(self.decorate_page(render_contracts_page()))
+            self.send_html(self.decorate_page(render_contracts_compact_page()))
+            return
+
+        if parsed.path == "/contracts/download":
+            if self.require_user() is None:
+                return
+            file_id = parse_qs(parsed.query).get("id", [""])[-1]
+            item = next((value for value in load_contract_files_meta() if str(value.get("id")) == file_id), None)
+            if item is None:
+                self.send_html(self.decorate_page(render_contracts_compact_page()), status=404)
+                return
+            stored_path = CONTRACT_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+            restore_file_from_supabase(str(item.get("file_key", "")), stored_path)
+            if not stored_path.exists():
+                self.send_html(self.decorate_page(render_contracts_compact_page()), status=404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(str(item.get("name", "")))[0] or "application/octet-stream")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(str(item.get('name', '계약서')))}")
+            self.send_header("Content-Length", str(stored_path.stat().st_size))
+            self.end_headers()
+            with stored_path.open("rb") as file:
+                shutil.copyfileobj(file, self.wfile)
             return
 
         if parsed.path == "/convert":
@@ -5113,6 +5199,20 @@ class BonnieHandler(BaseHTTPRequestHandler):
             return
 
         if path != "/convert":
+            if path == "/contracts/upload":
+                if self.require_user() is None:
+                    return
+                content_type = self.headers.get("Content-Type", "")
+                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                    environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": content_type})
+                try:
+                    if "contract_file" not in form:
+                        raise ValueError("올릴 계약서 파일을 선택해주세요.")
+                    save_contract_upload(form["contract_file"])
+                    self.send_redirect("/contracts")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"파일 업로드 중 오류가 났습니다: {exc}")), status=400)
+                return
             if path == "/contracts/amount/save":
                 if self.require_user() is None:
                     return
@@ -5121,7 +5221,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     save_contract_manual_amount(form.get("contract_id", ""), form.get("amount", ""))
                     self.send_redirect("/contracts")
                 except Exception as exc:
-                    self.send_html(self.decorate_page(render_contracts_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
+                    self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
             if path == "/admin/users/save":
                 if self.require_permission("admin") is None:
