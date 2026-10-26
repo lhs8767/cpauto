@@ -46,6 +46,7 @@ GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
 PRICE_HISTORY_PATH = DATA_DIR / "상품단가_이력.json"
+CONTRACT_MANUAL_PATH = DATA_DIR / "쿠팡계약_직접입력.json"
 
 
 def load_env_file(path: Path) -> None:
@@ -241,6 +242,30 @@ def save_price_history(data: dict[str, list[dict[str, object]]]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PRICE_HISTORY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("master_price_history", PRICE_HISTORY_PATH)
+
+
+def load_contract_manual_amounts() -> dict[str, str]:
+    restore_file_from_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+    if not CONTRACT_MANUAL_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CONTRACT_MANUAL_PATH.read_text(encoding="utf-8"))
+        return {str(key): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_contract_manual_amount(contract_id: str, amount: str) -> None:
+    if contract_id not in {"living_w42_43", "bonie_jjimhagi"}:
+        raise ValueError("저장할 계약을 찾지 못했습니다.")
+    cleaned = amount.strip()
+    if not cleaned:
+        raise ValueError("확인한 금액을 입력해주세요.")
+    data = load_contract_manual_amounts()
+    data[contract_id] = cleaned
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONTRACT_MANUAL_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
 
 
 def price_for_date(
@@ -4790,6 +4815,30 @@ def build_message(kind: str, text: str, link: str | None = None) -> str:
     return f'<div style="height:18px"></div><div class="status {cls}">{html.escape(text)}{link_html}</div>'
 
 
+def render_contracts_page() -> str:
+    saved = load_contract_manual_amounts()
+    cards = [
+        {"id":"living_w42_43","kind":"즉시할인 행사","title":"[홈인테리어] W42-43 WOW 리빙쇼 하반기","period":"2026-10-12 07:00부터 2026-10-26 06:59까지","amount":"금액 확인 필요","summary":"10월 12일 아침 7시부터 10월 26일 아침 6시 59분까지 진행하는 즉시할인 행사입니다. 보내주신 캡처에는 부담 금액이 보이지 않습니다.","details":[("행사 성격","자발"),("행사 유형","즉시할인")]},
+        {"id":"bonie_jjimhagi","kind":"쿠폰 행사","title":"보니애가구 집하기","period":"2026-10-14 00:00부터 2026-10-31 23:59까지","amount":"금액 확인 필요","summary":"10월 14일부터 10월 31일까지 전체 고객에게 다운로드 쿠폰을 제공하는 행사입니다. 보내주신 캡처에는 쿠폰 금액과 분담 금액이 보이지 않습니다.","details":[("행사 성격","자발"),("쿠폰 발행 대상","전체 고객"),("쿠폰 발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")]},
+        {"id":"october_banner_ad","kind":"광고 계약","title":"2026년 10월 배너(지면) 광고","period":"2026-10-20부터 2026-10-28까지","amount":"이번 청구 총 5,500,000원 (VAT 포함)","summary":"광고는 10월 20일부터 28일까지 진행됩니다. 16,000,000원은 전체 광고 집행 가능 금액이고, 이번에 실제 청구되는 금액은 공급가 5,000,000원과 VAT 500,000원을 합친 5,500,000원입니다.","details":[("세금계산서 발행일","2026-10-31"),("총 광고 집행 가능 금액","16,000,000원"),("이번 청구 공급가","5,000,000원 (VAT 별도)"),("VAT","500,000원"),("이번 청구 합계","5,500,000원 (VAT 포함)")]},
+    ]
+    parts = []
+    for card in cards:
+        saved_amount = saved.get(card["id"], "").strip()
+        amount = saved_amount or card["amount"]
+        details = "".join(f'<div class="cd"><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in card["details"])
+        editor = ""
+        if card["id"] in {"living_w42_43", "bonie_jjimhagi"}:
+            editor = ('<form class="af" method="post" action="/contracts/amount/save">'
+                      f'<input type="hidden" name="contract_id" value="{html.escape(card["id"])}">'
+                      f'<input name="amount" value="{html.escape(saved_amount)}" placeholder="예: 1,200,000원 (VAT 포함)"><button>금액 저장</button></form>')
+        warn = " warn" if "확인 필요" in amount else ""
+        parts.append(f'''<details class="card" open><summary><b>{html.escape(card["kind"])}</b><strong>{html.escape(card["title"])}</strong><i>펼침/숨김</i></summary><div class="body"><div class="box"><small>기간</small><strong>{html.escape(card["period"])}</strong></div><div class="box{warn}"><small>금액</small><strong>{html.escape(amount)}</strong>{editor}</div><p>{html.escape(card["summary"])}</p><div class="details">{details}</div></div></details>''')
+    return f'''<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
+    *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#172033;font-family:"Malgun Gothic",Arial,sans-serif}}.app{{min-height:100vh;display:grid;grid-template-columns:230px 1fr}}aside{{background:#102f4b;color:white;padding:24px 18px}}.logo{{font-size:18px;font-weight:900;margin-bottom:28px}}.logo small{{display:block;color:#b8c8d9;font-size:12px;margin-top:4px}}.nav-item{{padding:12px 13px;border-radius:8px;color:#d9e7f3;margin-bottom:6px;font-size:14px;cursor:pointer}}.nav-item:hover,.nav-item.active{{background:rgba(255,255,255,.13);color:white;font-weight:800}}main{{padding:28px;min-width:0}}h1{{margin:0 0 6px}}.intro{{margin:0 0 22px;color:#667085}}.guide{{background:#eaf3fb;border:1px solid #c9dceb;border-radius:10px;padding:14px 16px;margin-bottom:18px;color:#294d6c;font-weight:700;line-height:1.7}}.list{{display:grid;gap:14px}}.card{{background:white;border:1px solid #d7e1ee;border-radius:12px;overflow:hidden;box-shadow:0 8px 24px rgba(16,47,75,.06)}}.card summary{{display:flex;align-items:center;gap:10px;padding:15px 17px;cursor:pointer;list-style:none;background:#f9fbfd}}.card summary b{{background:#1f5d8f;color:white;padding:6px 9px;border-radius:6px;font-size:12px;white-space:nowrap}}.card summary strong{{flex:1}}.card summary i{{font-style:normal;color:#1f5d8f;font-size:12px;font-weight:900}}.body{{padding:17px;display:grid;grid-template-columns:1fr 1fr;gap:12px}}.box{{border:1px solid #d8e4ef;border-radius:9px;padding:13px;background:#f8fbfe}}.box small{{display:block;color:#667085;margin-bottom:6px;font-weight:800}}.box>strong{{font-size:16px;color:#173f68}}.box.warn{{background:#fff8e8;border-color:#f2d28b}}.box.warn>strong{{color:#9a5b00}}.body p{{grid-column:1/-1;margin:0;padding:15px;border-left:5px solid #1f5d8f;background:#eef6fc;line-height:1.7}}.details{{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px}}.cd{{padding:11px;border:1px solid #e0e7ef;border-radius:8px;display:flex;flex-direction:column;gap:5px}}.cd span{{color:#667085;font-size:12px}}.af{{display:flex;gap:7px;margin-top:10px}}.af input{{flex:1;min-width:0;border:1px solid #b9c9da;border-radius:6px;padding:8px}}.af button{{border:0;border-radius:6px;background:#1f5d8f;color:white;padding:8px 10px;font-weight:900;white-space:nowrap}}@media(max-width:800px){{.app{{grid-template-columns:1fr}}aside{{display:none}}main{{padding:18px}}.body{{grid-template-columns:1fr}}}}
+    </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><h1>쿠팡 계약 관리</h1><p class="intro">행사와 광고 계약의 기간과 금액을 쉬운 말로 정리한 화면입니다.</p><div class="guide">계약서 캡처나 파일을 보내주시면 기간, 실제 청구금액, VAT 여부를 정리합니다. 계약서에 없는 금액은 추측하지 않고 직접 입력할 수 있습니다.<br>전 제품 정률 할인은 할인율(1%·5% 등), 시작일·종료일, 유지기간(2개월·3개월), 비용 부담 주체와 중도해지·자동연장 조건까지 표시합니다.</div><div class="list">{"".join(parts)}</div></main></div></body></html>'''
+
+
 class BonnieHandler(BaseHTTPRequestHandler):
     SESSION_COOKIE = "coupang_session"
     COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").strip() == "1"
@@ -4858,6 +4907,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
         user = self.current_user()
         if user is None:
             return text
+        contract_active = " active" if urlparse(self.path).path == "/contracts" else ""
+        contract_link = f'<div class="nav-item{contract_active}" onclick="location.href=\'/contracts\'">쿠팡 계약 관리</div>'
         admin_link = ""
         if AUTH.has_permission(user, "admin"):
             admin_link = '<div class="nav-item" onclick="location.href=\'/admin\'">관리자모드</div>'
@@ -4868,7 +4919,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             '<a href="/logout" style="color:#fff;font-weight:800;text-decoration:none;">로그아웃</a>'
             '</div>'
         )
-        return text.replace("</aside>", f"{admin_link}{user_html}</aside>", 1)
+        return text.replace("</aside>", f"{contract_link}{admin_link}{user_html}</aside>", 1)
 
     def page(self, message: str = "") -> str:
         saved_master = get_saved_master_path()
@@ -4923,6 +4974,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if self.require_permission("sales") is None:
                 return
             self.send_redirect("/sales/folders")
+            return
+
+        if parsed.path == "/contracts":
+            if self.require_user() is None:
+                return
+            self.send_html(self.decorate_page(render_contracts_page()))
             return
 
         if parsed.path == "/convert":
@@ -5056,6 +5113,16 @@ class BonnieHandler(BaseHTTPRequestHandler):
             return
 
         if path != "/convert":
+            if path == "/contracts/amount/save":
+                if self.require_user() is None:
+                    return
+                form = self.read_urlencoded_form()
+                try:
+                    save_contract_manual_amount(form.get("contract_id", ""), form.get("amount", ""))
+                    self.send_redirect("/contracts")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
+                return
             if path == "/admin/users/save":
                 if self.require_permission("admin") is None:
                     return
