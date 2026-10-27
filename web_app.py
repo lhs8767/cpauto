@@ -333,7 +333,7 @@ def save_contract_files_meta(items: list[dict[str, str]]) -> None:
 
 
 def extract_contract_details(path: Path, month: str) -> dict[str, str]:
-    result = {"extraction_status": "수기 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    result = {"extraction_status": "수기 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "extraction_version": "2"}
     if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
         return result
     tesseract_path = get_tesseract_path()
@@ -365,6 +365,12 @@ def extract_contract_details(path: Path, month: str) -> dict[str, str]:
             likely_totals = [value for value in amounts if 100_000 <= value <= 50_000_000]
             if likely_totals:
                 result["extracted_amount"] = f"{likely_totals[-1]:,}원 (VAT 포함)"
+        if not result.get("extracted_amount"):
+            all_amounts = [int(value.replace(",", "")) for value in re.findall(r"(?<!\d)(\d[\d,]{5,})(?!\d)", compact)]
+            candidates = sorted({value for value in all_amounts if 100_000 <= value <= 50_000_000})
+            summed_total = next((total for total in reversed(candidates) for base in candidates for vat in candidates if base < total and vat < total and base + vat == total), 0)
+            if summed_total:
+                result["extracted_amount"] = f"{summed_total:,}원 (VAT 포함)"
         if any(key in result for key in ("extracted_title", "extracted_start", "extracted_amount")):
             result["extraction_status"] = "자동 반영"
     except Exception:
@@ -375,7 +381,7 @@ def extract_contract_details(path: Path, month: str) -> dict[str, str]:
 def refresh_contract_extractions(items: list[dict[str, str]]) -> list[dict[str, str]]:
     changed = False
     for item in items:
-        if str(item.get("extracted_at", "")).strip():
+        if str(item.get("extraction_version", "")) == "2":
             continue
         stored_path = CONTRACT_FILES_DIR / Path(str(item.get("stored_name", ""))).name
         restore_file_from_supabase(str(item.get("file_key", "")), stored_path)
@@ -5095,10 +5101,18 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         item_rows = []
         for item in items:
             contract_id = f'upload_{item.get("id", "")}'
-            amount = saved.get(contract_id, "")
+            amount = saved.get(contract_id, "").strip() or str(item.get("extracted_amount", "")).strip()
             extraction_status = str(item.get("extraction_status", "분석 대기"))
             status_color = "#067647" if extraction_status == "자동 반영" else "#9a5b00"
-            file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(extraction_status)}</small>'
+            extracted_parts = [str(item.get("extracted_title", "")).strip()]
+            start, end = str(item.get("extracted_start", "")).strip(), str(item.get("extracted_end", "")).strip()
+            if start and end:
+                extracted_parts.append(f"{start} ~ {end}")
+            if amount:
+                extracted_parts.append(amount)
+            extracted_summary = " · ".join(part for part in extracted_parts if part)
+            status_text = f"{extraction_status}: {extracted_summary}" if extracted_summary else extraction_status
+            file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(status_text)}</small>'
             item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
     upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
