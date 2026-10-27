@@ -303,7 +303,8 @@ def load_contract_names() -> dict[str, str]:
 
 
 def save_contract_name(contract_id: str, name: str) -> None:
-    if contract_id not in {"living_w42_43", "bonie_jjimhagi", "october_banner_ad"}:
+    upload_ids = {f'upload_{item.get("id", "")}' for item in load_contract_files_meta()}
+    if contract_id not in {"living_w42_43", "bonie_jjimhagi", "october_banner_ad"} | upload_ids:
         raise ValueError("이름을 수정할 계약을 찾지 못했습니다.")
     cleaned = name.strip()
     if not cleaned:
@@ -5113,34 +5114,43 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             extracted_summary = " · ".join(part for part in extracted_parts if part)
             status_text = f"{extraction_status}: {extracted_summary}" if extracted_summary else extraction_status
             file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(status_text)}</small>'
-            item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
+            item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
     upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
     rows = [
       {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
       {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 찜하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
-      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고 (10/12~10/26)","date":"10월 12일 ~ 10월 26일","exact":"광고 기간 2026-10-12 ~ 2026-10-26 · 세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"10월 12일부터 26일까지 진행한 배너 광고이며, 실제 결제 금액은 550만원","facts":[("광고 유형","배너(지면)광고"),("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
+      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"광고 기간 2026-10-20 ~ 2026-10-28 · 세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"10월 20일부터 28일까지 진행한 기존 배너 광고이며, 실제 결제 금액은 550만원","facts":[("광고 유형","배너 광고"),("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
     ]
-    extracted_ad = next((item for item in uploads if item.get("extracted_kind") == "광고"), None)
-    if extracted_ad and selected_month == contract_month:
-        ad_row = next(row for row in rows if row["id"] == "october_banner_ad")
-        start, end = str(extracted_ad.get("extracted_start", "")), str(extracted_ad.get("extracted_end", ""))
+    uploaded_rows = []
+    for item in uploads:
+        upload_id = f'upload_{item.get("id", "")}'
+        start, end = str(item.get("extracted_start", "")).strip(), str(item.get("extracted_end", "")).strip()
         if start and end:
             start_date, end_date = datetime.strptime(start, "%Y-%m-%d"), datetime.strptime(end, "%Y-%m-%d")
-            ad_row["date"] = f"{start_date.month}월 {start_date.day}일 ~ {end_date.month}월 {end_date.day}일"
-            ad_row["exact"] = f"광고 기간 {start} ~ {end}"
-        if extracted_ad.get("extracted_title"):
-            ad_row["title"] = str(extracted_ad["extracted_title"])
-        if extracted_ad.get("extracted_amount"):
-            ad_row["amount"] = str(extracted_ad["extracted_amount"])
+            period = f"{start_date.month}월 {start_date.day}일 ~ {end_date.month}월 {end_date.day}일"
+            exact = f"자동 인식 기간 {start} ~ {end}"
+        else:
+            period, exact = "기간 확인 필요", "파일에서 기간을 자동 인식하지 못했습니다. 이름과 금액은 직접 수정할 수 있습니다."
+        uploaded_rows.append({
+            "id": upload_id,
+            "kind": str(item.get("extracted_kind", "")).strip() or "계약",
+            "title": str(item.get("extracted_title", "")).strip() or Path(str(item.get("name", "계약 파일"))).stem,
+            "date": period,
+            "exact": exact,
+            "amount": str(item.get("extracted_amount", "")).strip() or "금액 확인 필요",
+            "easy": "업로드한 계약서에서 별도 계약으로 자동 등록했습니다.",
+            "facts": [("원본 파일", str(item.get("name", ""))), ("처리 상태", str(item.get("extraction_status", "수기 확인 필요")))],
+            "edit": True,
+        })
     out=[]
-    visible_rows = rows if selected_month == contract_month else []
+    visible_rows = (rows if selected_month == contract_month else []) + uploaded_rows
     for r in visible_rows:
         title = saved_names.get(r["id"], "").strip() or r["title"]
         sv=saved.get(r["id"],"").strip(); amount=sv or r["amount"]; waiting="확인 필요" in amount
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
-        editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
-        name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
+        editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
+        name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
         out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{name_editor}{editor}</section></details>')
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
@@ -5475,7 +5485,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 form = self.read_urlencoded_form()
                 try:
                     save_contract_manual_amount(form.get("contract_id", ""), form.get("amount", ""))
-                    self.send_redirect("/contracts")
+                    month = form.get("month", "").strip()
+                    self.send_redirect(f"/contracts?month={quote(month)}" if month else "/contracts")
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
@@ -5485,7 +5496,8 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 form = self.read_urlencoded_form()
                 try:
                     save_contract_name(form.get("contract_id", ""), form.get("name", ""))
-                    self.send_redirect("/contracts?month=2026-10")
+                    month = form.get("month", "").strip()
+                    self.send_redirect(f"/contracts?month={quote(month)}" if month else "/contracts")
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page("2026-10") + build_message("err", f"이름 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
