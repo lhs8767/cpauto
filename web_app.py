@@ -5029,9 +5029,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/":
-            if self.require_permission("sales") is None:
+            if self.require_permission("po_convert") is None:
                 return
-            self.send_redirect("/sales/folders")
+            self.send_redirect("/convert")
             return
 
         if parsed.path == "/contracts":
@@ -5189,7 +5189,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if token is None:
                 self.send_html(login_page("아이디 또는 비밀번호가 맞지 않습니다."), status=401)
                 return
-            self.send_redirect("/sales/folders", [self.session_cookie(token)])
+            self.send_redirect("/convert", [self.session_cookie(token)])
             return
 
         if path != "/convert":
