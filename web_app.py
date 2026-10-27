@@ -51,6 +51,7 @@ CONTRACT_MANUAL_PATH = DATA_DIR / "쿠팡계약_직접입력.json"
 CONTRACT_NAMES_PATH = DATA_DIR / "쿠팡계약_이름수정.json"
 CONTRACT_FILES_DIR = DATA_DIR / "쿠팡계약_원본"
 CONTRACT_FILES_META_PATH = DATA_DIR / "쿠팡계약_파일목록.json"
+_MASTER_SIMPLEWORKS_CACHE: dict[str, object] = {"key": None, "value": None}
 
 
 def load_env_file(path: Path) -> None:
@@ -331,6 +332,63 @@ def save_contract_files_meta(items: list[dict[str, str]]) -> None:
     backup_file_to_supabase("contract_files_metadata", CONTRACT_FILES_META_PATH)
 
 
+def extract_contract_details(path: Path, month: str) -> dict[str, str]:
+    result = {"extraction_status": "수기 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+        return result
+    tesseract_path = get_tesseract_path()
+    if not tesseract_path:
+        return result
+    try:
+        text = run_tesseract_text(tesseract_path, path, "6")
+        sparse_text = run_tesseract_text(tesseract_path, path, "11")
+        merged = text + "\n" + sparse_text
+        compact = re.sub(r"[ \t]+", " ", merged)
+        date_pattern = r"(20\d{2})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})"
+        period_area = compact
+        period_marker = re.search(r"광고\s*기간", compact)
+        if period_marker:
+            period_area = compact[period_marker.start():period_marker.start() + 220]
+        dates = re.findall(date_pattern, period_area)
+        if len(dates) >= 2:
+            normalized_dates = [f"{year}-{int(month_value):02d}-{int(day):02d}" for year, month_value, day in dates[:2]]
+            result["extracted_start"] = normalized_dates[0]
+            result["extracted_end"] = normalized_dates[1]
+        if re.search(r"배너|지면\s*광고", compact):
+            result["extracted_kind"] = "광고"
+            result["extracted_title"] = f"{int(month[5:])}월 배너 광고" if re.fullmatch(r"20\d{2}-\d{2}", month) else "배너 광고"
+        billing_marker = re.search(r"청구\s*광고비", compact)
+        if billing_marker:
+            billing_area = compact[billing_marker.start():billing_marker.start() + 220]
+            raw_amounts = re.findall(r"(?<!\d)(\d[\d,]{3,})(?!\d)", billing_area)
+            amounts = [int(value.replace(",", "")) for value in raw_amounts]
+            likely_totals = [value for value in amounts if 100_000 <= value <= 50_000_000]
+            if likely_totals:
+                result["extracted_amount"] = f"{likely_totals[-1]:,}원 (VAT 포함)"
+        if any(key in result for key in ("extracted_title", "extracted_start", "extracted_amount")):
+            result["extraction_status"] = "자동 반영"
+    except Exception:
+        pass
+    return result
+
+
+def refresh_contract_extractions(items: list[dict[str, str]]) -> list[dict[str, str]]:
+    changed = False
+    for item in items:
+        if str(item.get("extracted_at", "")).strip():
+            continue
+        stored_path = CONTRACT_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+        restore_file_from_supabase(str(item.get("file_key", "")), stored_path)
+        if stored_path.exists():
+            item.update(extract_contract_details(stored_path, str(item.get("month", ""))))
+        else:
+            item.update({"extraction_status": "원본 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+        changed = True
+    if changed:
+        save_contract_files_meta(items)
+    return items
+
+
 def save_contract_upload(file_item: cgi.FieldStorage, selected_month: str = "") -> dict[str, str]:
     filename = Path(str(file_item.filename or "")).name
     if not filename:
@@ -355,8 +413,9 @@ def save_contract_upload(file_item: cgi.FieldStorage, selected_month: str = "") 
         raise ValueError("계약 월을 올바르게 선택해주세요.")
     month_match = re.search(r"(20\d{2})[-._년 ]*(0?[1-9]|1[0-2])(?:월|-\d{1,2})", filename)
     month = selected_month or (f"{month_match.group(1)}-{int(month_match.group(2)):02d}" if month_match else uploaded_at[:7])
+    extracted = extract_contract_details(stored_path, month)
     item = {"id": file_id, "name": filename, "stored_name": stored_name, "file_key": file_key,
-            "uploaded_at": uploaded_at, "month": month, "status": "업로드 완료"}
+            "uploaded_at": uploaded_at, "month": month, "status": "업로드 완료", **extracted}
     items = load_contract_files_meta()
     items.insert(0, item)
     save_contract_files_meta(items)
@@ -4206,10 +4265,15 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
     master_path = get_saved_master_path()
     if master_path is None:
         raise ValueError("저장된 기초자료가 없습니다. 먼저 기초자료에 심플웍스 No를 입력해주세요.")
-    wb = load_workbook(master_path)
+    stat = master_path.stat()
+    cache_key = (str(master_path), stat.st_mtime_ns, stat.st_size)
+    if _MASTER_SIMPLEWORKS_CACHE.get("key") == cache_key:
+        cached = _MASTER_SIMPLEWORKS_CACHE.get("value")
+        if isinstance(cached, tuple) and len(cached) == 2:
+            return cached
+    wb = load_workbook(master_path, read_only=True, data_only=True)
     ws = wb.active
     cols = find_master_columns(ws)
-    wb.save(master_path)
     sku_to_simple: dict[str, str] = {}
     simple_to_info: dict[str, dict[str, str]] = {}
     for row in range(2, ws.max_row + 1):
@@ -4220,7 +4284,11 @@ def get_master_simpleworks_maps() -> tuple[dict[str, str], dict[str, dict[str, s
             continue
         sku_to_simple[sku] = simple_no
         simple_to_info.setdefault(simple_no, {"sku": sku, "name": name})
-    return sku_to_simple, simple_to_info
+    wb.close()
+    result = (sku_to_simple, simple_to_info)
+    _MASTER_SIMPLEWORKS_CACHE["key"] = cache_key
+    _MASTER_SIMPLEWORKS_CACHE["value"] = result
+    return result
 
 
 def parse_simpleworks_html_excel(path: Path) -> dict[str, int]:
@@ -4368,7 +4436,7 @@ def merge_quantity_maps(*quantity_maps: dict[str, int]) -> dict[str, int]:
     return merged
 
 
-def filter_known_simpleworks_quantities(quantities: dict[str, int]) -> dict[str, int]:
+def filter_known_simpleworks_quantities(quantities: dict[str, int], strict: bool = False) -> dict[str, int]:
     try:
         _sku_to_simple, simple_to_info = get_master_simpleworks_maps()
     except Exception:
@@ -4377,7 +4445,7 @@ def filter_known_simpleworks_quantities(quantities: dict[str, int]) -> dict[str,
     if not known_simple_nos:
         return quantities
     filtered = {simple_no: qty for simple_no, qty in quantities.items() if simple_no in known_simple_nos}
-    return filtered or quantities
+    return filtered if filtered or strict else quantities
 
 
 def normalize_ocr_qty_against_expected(actual: int, expected: int) -> int:
@@ -4541,7 +4609,6 @@ def parse_simpleworks_image(path: Path) -> dict[str, int]:
             "캡쳐 이미지를 읽으려면 OCR 프로그램인 Tesseract 설치가 필요합니다. "
             f"지금은 심플웍스 엑셀 업로드를 사용해주세요. 확인한 경로: {checked} / PATH: {os.environ.get('PATH', '')}"
         )
-    table_quantities = parse_simpleworks_table_image(path, tesseract_path)
     full_text_quantities: dict[str, int] = {}
     try:
         full_text = run_tesseract_text(tesseract_path, path, "6")
@@ -4549,11 +4616,15 @@ def parse_simpleworks_image(path: Path) -> dict[str, int]:
         if any(keyword in full_text for keyword in ["검수 결과", "심플웍스만 있음", "쿠팡만 있음", "수량차이"]) or "sku id" in lower_full_text:
             raise ValueError("검수 결과 화면 캡쳐가 아니라 심플웍스 상품/수량 화면 캡쳐를 올려주세요.")
         full_text_quantities = extract_simpleworks_quantities_from_text(full_text)
+        full_text_quantities = filter_known_simpleworks_quantities(full_text_quantities, strict=True)
+        if full_text_quantities:
+            return full_text_quantities
     except Exception as exc:
         if "검수 결과 화면 캡쳐" in str(exc):
             raise
-        if not table_quantities:
-            raise
+    table_quantities = parse_simpleworks_table_image(path, tesseract_path)
+    if not table_quantities:
+        raise ValueError("캡쳐 이미지에서 심플웍스 No와 수량을 찾지 못했습니다.")
     merged = merge_quantity_maps(table_quantities, full_text_quantities)
     return filter_known_simpleworks_quantities(merged)
 
@@ -5009,7 +5080,7 @@ def render_contracts_page() -> str:
 
 
 def render_contracts_compact_page(selected_month: str = "") -> str:
-    saved, uploads = load_contract_manual_amounts(), load_contract_files_meta()
+    saved, uploads = load_contract_manual_amounts(), refresh_contract_extractions(load_contract_files_meta())
     saved_names = load_contract_names()
     contract_month = "2026-10"
     available_months = sorted({contract_month, *(str(item.get("month", "")).strip() for item in uploads if str(item.get("month", "")).strip())}, reverse=True)
@@ -5025,7 +5096,10 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         for item in items:
             contract_id = f'upload_{item.get("id", "")}'
             amount = saved.get(contract_id, "")
-            item_rows.append(f'<div class="ur"><strong>{html.escape(str(item.get("name", "")))}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
+            extraction_status = str(item.get("extraction_status", "분석 대기"))
+            status_color = "#067647" if extraction_status == "자동 반영" else "#9a5b00"
+            file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(extraction_status)}</small>'
+            item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
     upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
     rows = [
@@ -5033,6 +5107,18 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
       {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 찜하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
       {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고 (10/12~10/26)","date":"10월 12일 ~ 10월 26일","exact":"광고 기간 2026-10-12 ~ 2026-10-26 · 세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"10월 12일부터 26일까지 진행한 배너 광고이며, 실제 결제 금액은 550만원","facts":[("광고 유형","배너(지면)광고"),("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
     ]
+    extracted_ad = next((item for item in uploads if item.get("extracted_kind") == "광고"), None)
+    if extracted_ad and selected_month == contract_month:
+        ad_row = next(row for row in rows if row["id"] == "october_banner_ad")
+        start, end = str(extracted_ad.get("extracted_start", "")), str(extracted_ad.get("extracted_end", ""))
+        if start and end:
+            start_date, end_date = datetime.strptime(start, "%Y-%m-%d"), datetime.strptime(end, "%Y-%m-%d")
+            ad_row["date"] = f"{start_date.month}월 {start_date.day}일 ~ {end_date.month}월 {end_date.day}일"
+            ad_row["exact"] = f"광고 기간 {start} ~ {end}"
+        if extracted_ad.get("extracted_title"):
+            ad_row["title"] = str(extracted_ad["extracted_title"])
+        if extracted_ad.get("extracted_amount"):
+            ad_row["amount"] = str(extracted_ad["extracted_amount"])
     out=[]
     visible_rows = rows if selected_month == contract_month else []
     for r in visible_rows:
