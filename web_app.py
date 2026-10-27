@@ -48,6 +48,7 @@ TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
 PRICE_HISTORY_PATH = DATA_DIR / "상품단가_이력.json"
 CONTRACT_MANUAL_PATH = DATA_DIR / "쿠팡계약_직접입력.json"
+CONTRACT_NAMES_PATH = DATA_DIR / "쿠팡계약_이름수정.json"
 CONTRACT_FILES_DIR = DATA_DIR / "쿠팡계약_원본"
 CONTRACT_FILES_META_PATH = DATA_DIR / "쿠팡계약_파일목록.json"
 
@@ -287,6 +288,30 @@ def save_contract_manual_amount(contract_id: str, amount: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CONTRACT_MANUAL_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+
+
+def load_contract_names() -> dict[str, str]:
+    restore_file_from_supabase("contract_names", CONTRACT_NAMES_PATH)
+    if not CONTRACT_NAMES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CONTRACT_NAMES_PATH.read_text(encoding="utf-8"))
+        return {str(key): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_contract_name(contract_id: str, name: str) -> None:
+    if contract_id not in {"living_w42_43", "bonie_jjimhagi", "october_banner_ad"}:
+        raise ValueError("이름을 수정할 계약을 찾지 못했습니다.")
+    cleaned = name.strip()
+    if not cleaned:
+        raise ValueError("행사·계약명을 입력해주세요.")
+    data = load_contract_names()
+    data[contract_id] = cleaned
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONTRACT_NAMES_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_names", CONTRACT_NAMES_PATH)
 
 
 def load_contract_files_meta() -> list[dict[str, str]]:
@@ -4985,6 +5010,7 @@ def render_contracts_page() -> str:
 
 def render_contracts_compact_page(selected_month: str = "") -> str:
     saved, uploads = load_contract_manual_amounts(), load_contract_files_meta()
+    saved_names = load_contract_names()
     contract_month = "2026-10"
     available_months = sorted({contract_month, *(str(item.get("month", "")).strip() for item in uploads if str(item.get("month", "")).strip())}, reverse=True)
     if selected_month not in available_months:
@@ -5004,16 +5030,18 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
     rows = [
       {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
-      {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 집하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
+      {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 찜하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
       {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"이번에 실제로 내는 돈은 550만원","facts":[("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
     ]
     out=[]
     visible_rows = rows if selected_month == contract_month else []
     for r in visible_rows:
+        title = saved_names.get(r["id"], "").strip() or r["title"]
         sv=saved.get(r["id"],"").strip(); amount=sv or r["amount"]; waiting="확인 필요" in amount
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
         editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
-        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{r["title"]}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{editor}</section></details>')
+        name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
+        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{name_editor}{editor}</section></details>')
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
@@ -5350,6 +5378,16 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/contracts")
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
+                return
+            if path == "/contracts/name/save":
+                if self.require_user() is None:
+                    return
+                form = self.read_urlencoded_form()
+                try:
+                    save_contract_name(form.get("contract_id", ""), form.get("name", ""))
+                    self.send_redirect("/contracts?month=2026-10")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_compact_page("2026-10") + build_message("err", f"이름 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
             if path == "/contracts/delete":
                 if self.require_user() is None:
