@@ -42,6 +42,7 @@ SALES_CONFIRM_PATH = DATA_DIR / "계산서_발행확인.json"
 SALES_PRICE_EDITS_PATH = DATA_DIR / "납품단가_수정이력.json"
 SALES_ADJUSTMENTS_PATH = DATA_DIR / "납품수량_메모_수정값.json"
 SALES_PO_UPLOADS_PATH = DATA_DIR / "납품PO_업로드이력.json"
+SALES_MONTH_CLOSE_PATH = DATA_DIR / "월마감_계산캐시.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
@@ -159,6 +160,23 @@ def save_sales_confirmations(data: dict[str, object]) -> None:
     backup_file_to_supabase("sales_confirmations", SALES_CONFIRM_PATH)
 
 
+def load_sales_month_close() -> dict[str, object]:
+    restore_file_from_supabase("sales_month_close", SALES_MONTH_CLOSE_PATH)
+    if not SALES_MONTH_CLOSE_PATH.exists():
+        return {"months": {}}
+    try:
+        data = json.loads(SALES_MONTH_CLOSE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"months": {}}
+    except (OSError, json.JSONDecodeError):
+        return {"months": {}}
+
+
+def save_sales_month_close(data: dict[str, object]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SALES_MONTH_CLOSE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("sales_month_close", SALES_MONTH_CLOSE_PATH)
+
+
 def load_sales_price_edits() -> dict[str, dict[str, object]]:
     restore_file_from_supabase("sales_price_edits", SALES_PRICE_EDITS_PATH)
     if not SALES_PRICE_EDITS_PATH.exists():
@@ -258,7 +276,8 @@ def load_contract_manual_amounts() -> dict[str, str]:
 
 
 def save_contract_manual_amount(contract_id: str, amount: str) -> None:
-    if contract_id not in {"living_w42_43", "bonie_jjimhagi"}:
+    upload_ids = {f'upload_{item.get("id", "")}' for item in load_contract_files_meta()}
+    if contract_id not in {"living_w42_43", "bonie_jjimhagi", "october_banner_ad"} | upload_ids:
         raise ValueError("저장할 계약을 찾지 못했습니다.")
     cleaned = amount.strip()
     if not cleaned:
@@ -305,8 +324,11 @@ def save_contract_upload(file_item: cgi.FieldStorage) -> dict[str, str]:
     stored_path.write_bytes(content)
     file_key = f"contract_file_{file_id}"
     backup_file_to_supabase(file_key, stored_path)
+    uploaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    month_match = re.search(r"(20\d{2})[-._년 ]*(0?[1-9]|1[0-2])(?:월|-\d{1,2})", filename)
+    month = f"{month_match.group(1)}-{int(month_match.group(2)):02d}" if month_match else uploaded_at[:7]
     item = {"id": file_id, "name": filename, "stored_name": stored_name, "file_key": file_key,
-            "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "정리 대기"}
+            "uploaded_at": uploaded_at, "month": month, "status": "업로드 완료"}
     items = load_contract_files_meta()
     items.insert(0, item)
     save_contract_files_meta(items)
@@ -3176,10 +3198,14 @@ def rebuild_monthly_sales_from_uploaded_pos() -> tuple[int, int, int]:
     saved_count, total_amount = update_monthly_sales(all_lines)
     return len(latest_by_po), saved_count, total_amount
 
-def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
+    close_months = load_sales_month_close().get("months", {}) if use_close_cache else {}
+    if not isinstance(close_months, dict):
+        close_months = {}
+    closed_months = {month for month, record in close_months.items() if isinstance(record, dict) and record.get("closed")}
     master_amounts = get_master_amounts_by_sku()
     price_history = load_price_history()
     price_edits = load_sales_price_edits()
@@ -3190,6 +3216,8 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
     rows = []
     for row in range(2, ws.max_row + 1):
         day = str(ws.cell(row, 1).value or "")
+        if day[:7] in closed_months:
+            continue
         sku = str(ws.cell(row, 4).value or "")
         name = str(ws.cell(row, 5).value or "")
         original_qty = parse_int(ws.cell(row, 6).value)
@@ -3298,9 +3326,49 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
         (month, values["qty"], values["amount"], len(values["pos"]))
         for month, values in sorted(summary.items())
     ]
+    if use_close_cache:
+        detail_key = "detail_sku" if aggregate_by_sku else "detail_po"
+        for month in sorted(closed_months):
+            record = close_months.get(month, {})
+            summary_rows.extend(record.get("summary_rows", []))
+            rows.extend(record.get(detail_key, []))
+        summary_rows.sort(key=lambda item: str(item[0]))
+        rows.sort(key=lambda item: (str(item[1]), str(item[2])))
     if limit_rows is None:
         return summary_rows, rows
     return summary_rows, rows[-limit_rows:]
+
+
+def set_sales_month_closed(month: str, closed: bool, username: str) -> str:
+    if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
+        raise ValueError("마감할 월이 올바르지 않습니다.")
+    data = load_sales_month_close()
+    months = data.setdefault("months", {})
+    if not isinstance(months, dict):
+        months = {}
+        data["months"] = months
+    if closed:
+        summary_rows, detail_sku = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True, use_close_cache=False)
+        _summary_rows, detail_po = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False, use_close_cache=False)
+        month_summary = [row for row in summary_rows if str(row[0])[:7] == month]
+        month_sku = [row for row in detail_sku if str(row[1])[:7] == month]
+        month_po = [row for row in detail_po if str(row[1])[:7] == month]
+        if not month_summary:
+            raise ValueError(f"{month}에 마감할 매출 자료가 없습니다.")
+        months[month] = {
+            "closed": True,
+            "closed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "closed_by": username,
+            "summary_rows": month_summary,
+            "detail_sku": month_sku,
+            "detail_po": month_po,
+        }
+        message = f"{month} 마감을 완료했습니다. 재계산 요청 전까지 저장된 결과를 사용합니다."
+    else:
+        months.pop(month, None)
+        message = f"{month} 재계산을 요청했습니다. 최신 엑셀 자료로 다시 계산합니다."
+    save_sales_month_close(data)
+    return message
 
 
 def render_growth_incentive_tables() -> str:
@@ -3894,6 +3962,10 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     restore_sales_files_from_supabase(force=True)
+    close_data = load_sales_month_close()
+    close_months = close_data.get("months", {}) if isinstance(close_data, dict) else {}
+    if not isinstance(close_months, dict):
+        close_months = {}
     po_uploads = load_sales_po_uploads()
     if folder_mode:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
@@ -3925,6 +3997,14 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
             month_po_count = sum(po_count for _day, _qty, _amount, po_count in rows_for_month)
             month_vat, month_budget = sales_extra_amounts(month_amount)
             year_text, month_text = month.split("-", 1) if "-" in month else ("", month)
+            month_closed = bool(isinstance(close_months.get(month), dict) and close_months[month].get("closed"))
+            close_button = (
+                f'<form method="post" action="/sales/month-close" style="margin-left:auto;">'
+                f'<button class="confirm-action" type="submit" name="recalc_month" value="{html.escape(month, quote=True)}">재계산 요청</button></form>'
+                if month_closed else
+                f'<form method="post" action="/sales/month-close" style="margin-left:auto;">'
+                f'<button class="confirm-action" type="submit" name="close_month" value="{html.escape(month, quote=True)}">마감완료</button></form>'
+            )
             collapsed_class = "" if month == latest_summary_month else " is-collapsed"
             toggle_label = "숨기기" if month == latest_summary_month else "펼치기"
             row_parts = []
@@ -3945,7 +4025,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 f'<section class="summary-month-section{collapsed_class}" data-month="{html.escape(month, quote=True)}">'
                 f'<div class="summary-month-head">'
                 f'<div class="summary-month-title">{html.escape(year_text)}년 {html.escape(month_text)}월 매출</div>'
-                f'<button class="summary-month-toggle" type="button" onclick="toggleSummaryMonth(this)">{toggle_label}</button></div>'
+                f'<button class="summary-month-toggle" type="button" onclick="toggleSummaryMonth(this)">{toggle_label}</button>{close_button}</div>'
                 f'<div class="summary-month-body"><div class="scroll" style="max-height:620px;"><table class="summary-table resizable-table" style="min-width:1500px;">'
                 f'<colgroup><col style="width:9%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:17%;"></colgroup>'
                 f'<thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead>'
@@ -3978,11 +4058,15 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 hidden_class = " month-hidden" if folder_mode else ""
                 mode_hidden = " view-hidden" if view_mode != "sku" else ""
                 mode_label = "SKU 합계" if view_mode == "sku" else "PO별 상세"
+                month_closed = bool(isinstance(close_months.get(month), dict) and close_months[month].get("closed"))
+                close_name = "recalc_month" if month_closed else "close_month"
+                close_label = "재계산 요청" if month_closed else "마감완료"
                 if folder_mode:
                     parts.append(
                         f'<tr class="month-folder is-closed{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}">'
                         f'<th colspan="8">{html.escape(month)} {mode_label} '
                         f'<button class="toggle-btn" type="button" onclick="toggleMonthFolder(\'{html.escape(month, quote=True)}\', this)">펼치기</button> '
+                        f'<button class="toggle-btn" type="submit" formmethod="post" formaction="/sales/month-close" name="{close_name}" value="{html.escape(month, quote=True)}">{close_label}</button> '
                         f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_month\" value=\"{html.escape(month, quote=True)}\" onclick=\"return confirmDeleteMonth(\'{html.escape(month, quote=True)}\')\">월 삭제</button>"}</th></tr>'
                     )
                 for day in by_month[month]:
@@ -4880,7 +4964,18 @@ def render_contracts_page() -> str:
 
 def render_contracts_compact_page() -> str:
     saved, uploads = load_contract_manual_amounts(), load_contract_files_meta()
-    upload_rows = "".join(f'<div class="ur"><strong>{html.escape(str(x.get("name","")))}</strong><span>{html.escape(str(x.get("uploaded_at","")))}</span><b>{html.escape(str(x.get("status","정리 대기")))}</b><a href="/contracts/download?id={quote(str(x.get("id","")))}">원본 받기</a></div>' for x in uploads) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
+    uploads_by_month: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for item in uploads:
+        uploads_by_month[str(item.get("month", "")).strip() or str(item.get("uploaded_at", ""))[:7] or "미분류"].append(item)
+    upload_groups = []
+    for month, items in sorted(uploads_by_month.items(), reverse=True):
+        item_rows = []
+        for item in items:
+            contract_id = f'upload_{item.get("id", "")}'
+            amount = saved.get(contract_id, "")
+            item_rows.append(f'<div class="ur"><strong>{html.escape(str(item.get("name", "")))}</strong><span>{html.escape(str(item.get("uploaded_at", "")))}</span><form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a></div>')
+        upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
+    upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
     rows = [
       {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
       {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 집하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
@@ -4977,7 +5072,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
             '<a href="/logout" style="color:#fff;font-weight:800;text-decoration:none;">로그아웃</a>'
             '</div>'
         )
-        return text.replace("</aside>", f"{contract_link}{admin_link}{user_html}</aside>", 1)
+        convert_link = '<div class="nav-item" onclick="location.href=\'/convert\'">PO변환</div>'
+        if convert_link in text:
+            text = text.replace(convert_link, convert_link + contract_link, 1)
+        else:
+            admin_link = contract_link + admin_link
+        return text.replace("</aside>", f"{admin_link}{user_html}</aside>", 1)
 
     def page(self, message: str = "") -> str:
         saved_master = get_saved_master_path()
@@ -5101,6 +5201,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 "ok",
                 f"수량/메모/단가 수정 {saved_count}개 항목을 저장하고 합계금액을 다시 계산했습니다.",
             ) if saved_count else ""
+            month_action = query.get("month_action", [""])[-1].strip()
+            if month_action:
+                page_message = build_message("ok", month_action)
             deleted_po = query.get("deleted_po", [""])[-1]
             deleted_count = parse_int(query.get("deleted_count", ["0"])[-1])
             if re.fullmatch(r"\d{6,}", deleted_po) and deleted_count > 0:
@@ -5299,6 +5402,11 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     return
                 self.handle_sales_confirm_request()
                 return
+            if path == "/sales/month-close":
+                if self.require_permission("sales") is None:
+                    return
+                self.handle_sales_month_close_request()
+                return
             if path == "/sales/delete":
                 if self.require_permission("sales") is None:
                     return
@@ -5471,6 +5579,20 @@ class BonnieHandler(BaseHTTPRequestHandler):
             self.send_html(self.decorate_page(render_sales_page(build_message("ok", message))))
         except Exception as exc:
             self.send_html(self.decorate_page(render_sales_page(build_message("err", f"계산서 확인 저장 중 오류가 났습니다: {exc}"))), status=400)
+
+    def handle_sales_month_close_request(self) -> None:
+        form = self.read_urlencoded_form()
+        try:
+            user = self.current_user() or {}
+            close_month = form.get("close_month", "").strip()
+            recalc_month = form.get("recalc_month", "").strip()
+            month = close_month or recalc_month
+            message = set_sales_month_closed(month, bool(close_month), str(user.get("username", "알 수 없음")))
+            location = self.sales_folders_location(month)
+            separator = "&" if "?" in location else "?"
+            self.send_redirect(f"{location}{separator}month_action={quote(message)}")
+        except Exception as exc:
+            self.send_html(self.decorate_page(render_sales_page(build_message("err", f"월 마감 처리 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
 
     def handle_sales_delete_request(self) -> None:
         content_type = self.headers.get("Content-Type", "")
