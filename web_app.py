@@ -1804,7 +1804,7 @@ SALES_PAGE = """<!DOCTYPE html>
               <input type="file" name="tester_files" accept=".xlsx" multiple required>
               <button class="btn" type="submit">체험단 엑셀 올리기</button>
             </form>
-            <div style="margin-top:9px;color:#667085;font-size:12px;">파일명에서 연·월을 확인하고 ‘총 진행 금액’을 체험단 비용에 자동 반영합니다. 자동 반영 후 위 연도총매출 표에서 금액을 수기로 고쳐 저장할 수도 있습니다.</div>
+            <div style="margin-top:9px;color:#667085;font-size:12px;">파일명에서 연·월을 확인하고 첫 번째 시트 L2의 합계 금액을 체험단 비용에 자동 반영합니다. 자동 반영 후 위 연도총매출 표에서 금액을 수기로 고쳐 저장할 수도 있습니다.</div>
             <div id="tester-month-empty" style="display:none;margin-top:14px;padding:12px;border:1px dashed #cbd9e8;border-radius:8px;background:#f8fbff;color:#667085;font-size:13px;"></div>
             <div style="margin-top:14px;">{tester_files}</div>
           </div>
@@ -3412,7 +3412,7 @@ def load_tester_files_meta() -> list[dict[str, object]]:
     changed = False
     affected_months: set[str] = set()
     for item in items:
-        if not isinstance(item, dict) or item.get("amount_parser_version") == 2:
+        if not isinstance(item, dict) or item.get("amount_parser_version") == 3:
             continue
         stored_path = TESTER_FILES_DIR / Path(str(item.get("stored_name", ""))).name
         file_key = str(item.get("file_key", ""))
@@ -3426,7 +3426,7 @@ def load_tester_files_meta() -> list[dict[str, object]]:
             continue
         item["month"] = month
         item["amount"] = amount
-        item["amount_parser_version"] = 2
+        item["amount_parser_version"] = 3
         affected_months.add(month)
         changed = True
     if changed:
@@ -3460,22 +3460,16 @@ def parse_tester_workbook(file_bytes: bytes, filename: str) -> tuple[str, int]:
     month = parse_tester_month(filename)
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     try:
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for index, cell in enumerate(row):
-                    if norm_header(cell.value) != "총진행금액":
-                        continue
-                    for next_cell in row[index + 1:index + 4]:
-                        raw_amount = next_cell.value
-                        try:
-                            amount = int(round(float(str(raw_amount).replace(",", "").replace("원", "").strip())))
-                        except (TypeError, ValueError):
-                            amount = 0
-                        if amount > 0:
-                            return month, amount
+        raw_amount = wb.worksheets[0]["L2"].value
+        try:
+            amount = int(round(float(str(raw_amount).replace(",", "").replace("원", "").strip())))
+        except (TypeError, ValueError):
+            amount = 0
+        if amount > 0:
+            return month, amount
     finally:
         wb.close()
-    raise ValueError(f"'{filename}'에서 총 진행 금액을 찾지 못했습니다.")
+    raise ValueError(f"'{filename}'의 첫 번째 시트 L2에서 합계 금액을 찾지 못했습니다.")
 
 
 def save_uploaded_tester_files(items: list[tuple[str, bytes]]) -> tuple[int, list[str]]:
@@ -3498,7 +3492,7 @@ def save_uploaded_tester_files(items: list[tuple[str, bytes]]) -> tuple[int, lis
             "file_key": file_key,
             "month": month,
             "amount": amount,
-            "amount_parser_version": 2,
+            "amount_parser_version": 3,
             "uploaded_at": datetime.now().isoformat(timespec="seconds"),
         })
         affected_months.add(month)
