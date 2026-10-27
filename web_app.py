@@ -335,6 +335,24 @@ def save_contract_upload(file_item: cgi.FieldStorage) -> dict[str, str]:
     return item
 
 
+def delete_contract_upload(file_id: str) -> str:
+    items = load_contract_files_meta()
+    item = next((value for value in items if str(value.get("id", "")) == file_id), None)
+    if item is None:
+        raise ValueError("삭제할 계약 파일을 찾지 못했습니다.")
+    stored_path = CONTRACT_FILES_DIR / Path(str(item.get("stored_name", ""))).name
+    stored_path.unlink(missing_ok=True)
+    file_key = str(item.get("file_key", ""))
+    if file_key:
+        supabase_request("DELETE", f"/rest/v1/app_files?file_key=eq.{urllib.parse.quote(file_key)}")
+    save_contract_files_meta([value for value in items if str(value.get("id", "")) != file_id])
+    amounts = load_contract_manual_amounts()
+    if amounts.pop(f"upload_{file_id}", None) is not None:
+        CONTRACT_MANUAL_PATH.write_text(json.dumps(amounts, ensure_ascii=False, indent=2), encoding="utf-8")
+        backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+    return str(item.get("name", "계약 파일"))
+
+
 def price_for_date(
     sku: str,
     base_amount: int,
@@ -4973,13 +4991,13 @@ def render_contracts_compact_page() -> str:
         for item in items:
             contract_id = f'upload_{item.get("id", "")}'
             amount = saved.get(contract_id, "")
-            item_rows.append(f'<div class="ur"><strong>{html.escape(str(item.get("name", "")))}</strong><span>{html.escape(str(item.get("uploaded_at", "")))}</span><form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a></div>')
+            item_rows.append(f'<div class="ur"><strong>{html.escape(str(item.get("name", "")))}</strong><span>{html.escape(str(item.get("uploaded_at", "")))}</span><form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><span><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></span></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
     upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
     rows = [
       {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
       {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 집하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
-      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"이번에 실제로 내는 돈은 550만원","facts":[("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":False},
+      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"이번에 실제로 내는 돈은 550만원","facts":[("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
     ]
     out=[]
     for r in rows:
@@ -5319,6 +5337,16 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/contracts")
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"금액 저장 중 오류가 났습니다: {exc}")), status=400)
+                return
+            if path == "/contracts/delete":
+                if self.require_user() is None:
+                    return
+                form = self.read_urlencoded_form()
+                try:
+                    delete_contract_upload(form.get("file_id", "").strip())
+                    self.send_redirect("/contracts")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"파일 삭제 중 오류가 났습니다: {exc}")), status=400)
                 return
             if path == "/admin/users/save":
                 if self.require_permission("admin") is None:
