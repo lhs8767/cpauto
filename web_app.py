@@ -291,6 +291,19 @@ def save_contract_manual_amount(contract_id: str, amount: str) -> None:
     backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
 
 
+def save_contract_month_total(month: str, amount: str) -> None:
+    if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
+        raise ValueError("저장할 계약 월이 올바르지 않습니다.")
+    cleaned = re.sub(r"[^0-9]", "", str(amount or ""))
+    if not cleaned:
+        raise ValueError("확인된 청구액을 입력해주세요.")
+    data = load_contract_manual_amounts()
+    data[f"month_total_{month}"] = str(int(cleaned))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONTRACT_MANUAL_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+
+
 def load_contract_names() -> dict[str, str]:
     restore_file_from_supabase("contract_names", CONTRACT_NAMES_PATH)
     if not CONTRACT_NAMES_PATH.exists():
@@ -5231,6 +5244,8 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
     confirmed_total = contract_amount_total(visible_rows, saved)
+    total_override = parse_int(saved.get(f"month_total_{selected_month}", 0))
+    confirmed_total_display = total_override if total_override > 0 else confirmed_total
     page = f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
     *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#172033;font-family:"Malgun Gothic",Arial,sans-serif}}.app{{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}}aside{{background:#102f4b;color:white;padding:24px 18px}}.logo{{font-size:18px;font-weight:900;margin-bottom:28px}}.logo small{{display:block;color:#b8c8d9;font-size:12px}}.nav-item{{padding:12px 13px;border-radius:8px;color:#d9e7f3;margin-bottom:6px;cursor:pointer}}.nav-item:hover,.nav-item.active{{background:rgba(255,255,255,.13);font-weight:800}}main{{padding:26px}}.wrap{{max-width:1280px;margin:auto}}h1{{margin:0 0 5px}}.sub{{margin:0 0 16px;color:#667085}}.upload{{background:white;border:1px solid #cbd9e8;border-radius:10px;padding:15px;margin-bottom:14px}}.upload h2{{margin:0 0 10px;font-size:16px}}.upload>form{{display:flex;gap:8px}}.upload>form>input{{flex:1;border:1px dashed #9eb4ca;border-radius:7px;padding:9px}}button{{border:0;border-radius:7px;background:#1f5d8f;color:white;padding:9px 15px;font-weight:900}}.ul{{margin-top:10px;border-top:1px solid #e5ebf2}}.ur{{display:grid;grid-template-columns:minmax(220px,1fr) 145px minmax(310px,390px);align-items:center;gap:12px;padding:9px 3px;border-bottom:1px solid #edf1f5;font-size:12px}}.ur strong{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.ur a{{color:#1f5d8f;font-weight:900;text-decoration:none;white-space:nowrap}}.upload-actions{{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0}}.amount-form{{display:flex;align-items:center;gap:6px;min-width:0;flex:1}}.amount-form input{{min-width:0;width:100%;border:1px solid #b9c9da;border-radius:7px;padding:8px}}.amount-form button,.file-actions button{{padding:8px 11px;white-space:nowrap}}.file-actions{{display:flex;align-items:center;gap:7px;white-space:nowrap}}.file-actions form{{display:inline-flex;margin:0}}.empty{{padding:9px;color:#667085;font-size:12px}}.nums{{display:flex;gap:9px;margin-bottom:13px}}.nums div{{background:white;border:1px solid #d8e3ee;border-radius:8px;padding:10px 14px;min-width:150px}}.nums span{{display:block;color:#667085;font-size:11px}}.nums strong{{font-size:17px;color:#173f68}}.head,.row summary{{display:grid;grid-template-columns:90px minmax(230px,1fr) 190px 220px 90px 55px;gap:9px;align-items:center}}.head{{padding:7px 13px;color:#667085;font-size:11px;font-weight:900}}.row{{background:white;border:1px solid #d7e1ee;border-radius:8px;margin-bottom:8px;overflow:hidden}}.row summary{{padding:13px;cursor:pointer;list-style:none}}.row summary>b{{width:max-content;background:#1f5d8f;color:white;border-radius:5px;padding:5px 8px;font-size:11px}}.row summary>span{{color:#315b7d;font-weight:800}}.row summary>em{{font-style:normal;text-align:right;font-weight:900}}.row summary>i{{font-style:normal;text-align:center;border-radius:5px;padding:5px;font-size:11px;font-weight:900}}.wait{{background:#fff1cc;color:#8a5300}}.done{{background:#dcfae6;color:#067647}}.row summary>u{{text-decoration:none;color:#1f5d8f;font-size:11px;font-weight:900}}.row section{{padding:13px 17px;background:#f9fbfd;border-top:1px solid #e3e9f0}}.row p{{margin:0 0 8px;background:#eaf3fb;padding:10px;border-radius:6px}}.row small{{color:#52687d}}.facts{{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}}.facts div{{min-width:160px;background:white;border:1px solid #dce5ee;border-radius:6px;padding:8px}}.facts span{{display:block;color:#667085;font-size:10px}}.row section form{{display:flex;gap:8px;margin-top:10px}}.row section input{{flex:1;padding:8px;border:1px solid #b9c9da;border-radius:6px}}.note{{margin-top:13px;padding:12px;background:white;border:1px dashed #aebfd0;border-radius:7px;color:#38546e;font-size:12px}}@media(max-width:1100px){{.ur{{grid-template-columns:minmax(180px,1fr) 125px minmax(280px,340px)}}.upload-actions{{gap:7px}}}}@media(max-width:950px){{.head{{display:none}}.row summary{{grid-template-columns:85px 1fr 160px}}.row summary>i,.row summary>u{{display:none}}.ur{{grid-template-columns:minmax(180px,1fr) 120px}}.upload-actions{{grid-column:1/-1;justify-content:flex-end}}}}@media(max-width:700px){{.app{{grid-template-columns:1fr}}aside{{display:none}}main{{padding:14px}}.upload>form{{flex-direction:column}}.ur{{grid-template-columns:1fr}}.uploaded-at{{font-size:11px;color:#667085}}.upload-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.amount-form{{width:100%}}.file-actions{{justify-content:flex-end}}.nums{{flex-wrap:wrap}}.row summary{{grid-template-columns:75px 1fr}}.row summary>span,.row summary>em{{grid-column:2;text-align:left}}}}
     </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><div class="wrap"><h1>쿠팡 계약 관리</h1><p class="sub">계약서를 먼저 올리고, 기간과 실제 금액을 한눈에 확인하세요.</p><form class="month-filter" method="get" action="/contracts"><label>조회 월</label><select name="month" onchange="this.form.submit()">{month_options}</select></form><div class="upload"><h2>{selected_month[:4]}년 {int(selected_month[5:]):02d}월 계약서 파일 올리기</h2><form method="post" action="/contracts/upload" enctype="multipart/form-data"><input type="month" name="contract_month" value="{html.escape(selected_month, quote=True)}" required><input type="file" name="contract_file" accept=".png,.jpg,.jpeg,.pdf,.xlsx,.docx" required><button>파일 올리기</button></form><div class="ul">{upload_rows}</div></div><div class="nums"><div><span>{int(selected_month[5:])}월 정리된 계약</span><strong>{len(visible_rows)}건</strong></div><div><span>금액 입력 필요</span><strong>{sum(1 for r in visible_rows if "확인 필요" in (saved.get(r["id"], "").strip() or r["amount"]))}건</strong></div><div><span>확인된 청구액</span><strong>{"5,500,000원" if selected_month == contract_month else "0원"}</strong></div></div><h2 class="month-title">{selected_month[:4]}년 {int(selected_month[5:]):02d}월 계약 내역</h2><div class="head"><span>구분</span><span>행사·계약명</span><span>기간</span><span style="text-align:right">실제 금액</span><span>상태</span><span></span></div>{contract_rows}<div class="note"><b>전 제품 정률 할인</b>: 할인율(1%·5%), 기간, 유지기간(2개월·3개월), 비용 부담 주체를 함께 표시합니다.</div></div></main></div></body></html>'''
@@ -5242,7 +5257,14 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     page = page.replace("</style>", compact_css + "</style>", 1)
     page = page.replace('<div class="ul"></div>', '')
     page = page.replace('<span style="text-align:right">실제 금액</span>', '<span style="text-align:right">실제 금액<br>(VAT 미포함)</span>')
-    page = re.sub(r'<span>확인된 청구액</span><strong>[^<]*</strong>', f'<span>확인된 청구액<br>(VAT 미포함)</span><strong>{confirmed_total:,}원</strong>', page, count=1)
+    total_editor = (
+        f'<span>확인된 청구액<br>(VAT 미포함)</span><strong>{confirmed_total_display:,}원</strong>'
+        f'<form method="post" action="/contracts/total/save" style="display:flex;gap:5px;margin-top:7px;">'
+        f'<input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}">'
+        f'<input name="amount" inputmode="numeric" value="{confirmed_total_display}" style="width:112px;padding:6px;border:1px solid #b9c9da;border-radius:6px;text-align:right;" aria-label="확인된 청구액 수정">'
+        f'<button type="submit" style="padding:6px 9px;font-size:11px;">금액 수정</button></form>'
+    )
+    page = re.sub(r'<span>확인된 청구액</span><strong>[^<]*</strong>', total_editor, page, count=1)
     return page
 
 
@@ -5587,6 +5609,17 @@ class BonnieHandler(BaseHTTPRequestHandler):
                     self.send_redirect(f"/contracts?month={quote(month)}" if month else "/contracts")
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page("2026-10") + build_message("err", f"이름 저장 중 오류가 났습니다: {exc}")), status=400)
+                return
+            if path == "/contracts/total/save":
+                if self.require_user() is None:
+                    return
+                form = self.read_urlencoded_form()
+                month = form.get("month", "").strip()
+                try:
+                    save_contract_month_total(month, form.get("amount", ""))
+                    self.send_redirect(f"/contracts?month={quote(month)}")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_compact_page(month) + build_message("err", f"합계 금액 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
             if path == "/contracts/delete":
                 if self.require_user() is None:
