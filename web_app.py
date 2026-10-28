@@ -1035,8 +1035,7 @@ SALES_PAGE = """<!DOCTYPE html>
     .confirm-meta { margin-top:7px; color:#667085; font-size:12px; }
     .summary-invoice-input { width:100%; min-width:120px; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; text-align:right; background:#fff; }
     .summary-invoice-number { text-align:left; }
-    .invoice-new-numbers, .invoice-new-amounts { display:grid; gap:6px; }
-    .invoice-add-row { border:1px solid #1f5d8f; border-radius:6px; padding:7px 9px; background:#fff; color:#1f5d8f; font-weight:800; cursor:pointer; }
+    .invoice-batch-input { width:100%; min-height:54px; resize:vertical; border:1px solid #b9c6d8; border-radius:6px; padding:8px 10px; background:#fff; font:inherit; line-height:1.5; }
     .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .summary-invoice-detail { margin-top:6px; font-size:11px; }
     .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; }
@@ -4069,11 +4068,10 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     )
     details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td><div class="invoice-new-numbers"><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required></div></td>'
-        f'<td><div class="invoice-new-amounts"><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required></div></td>'
+        f'<td colspan="2"><textarea class="invoice-batch-input" name="invoice_batch" form="{form_id}" rows="2" placeholder="엑셀의 계산서 번호·발행 금액 두 열을 여러 행 선택하여 한 번에 붙여넣으세요." required></textarea></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
         f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoices"></form>'
-        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="invoice-add-row" type="button" onclick="addInvoiceEntry(this, \'{form_id}\')">+ 입력줄 추가</button><button class="confirm-action" type="submit" form="{form_id}">한번에 저장</button></div>{details}</td>'
+        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">한번에 추가</button></div>{details}</td>'
     )
     return cells, issued, confirmed
 
@@ -4177,6 +4175,10 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_html = '<div class="summary-month-section"><div class="summary-month-body"><table class="summary-table"><tbody><tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr></tbody></table></div></div>'
 
     if visible_detail_rows:
+        po_numbers_by_day = defaultdict(set)
+        for po_row in visible_po_detail_rows:
+            if len(po_row) > 8:
+                po_numbers_by_day[str(po_row[1])].update(split_po_numbers(po_row[8]))
         detail_sources = [("sku", visible_detail_rows)]
         if folder_mode:
             po_rows = []
@@ -4211,7 +4213,10 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                 for day in by_month[month]:
                     day_qty = sum(row[4] for row in by_day[day])
                     day_amount = sum(row[6] for row in by_day[day])
-                    day_po_numbers = sorted({po for row in by_day[day] for po in split_po_numbers(row[7])})
+                    day_po_numbers = sorted(
+                        po_numbers_by_day.get(str(day), set())
+                        or {po for row in by_day[day] for po in split_po_numbers(row[7])}
+                    )
                     po_summary = (
                         f'<details style="display:inline-block;margin-left:12px;"><summary style="cursor:pointer;color:#1d5686;font-weight:900;">발주서 총 {len(day_po_numbers)}개 보기</summary>'
                         f'<div style="margin-top:7px;padding:8px 10px;border:1px solid #bfd2e5;border-radius:7px;background:#fff;font-weight:700;line-height:1.7;">{html.escape(", ".join(day_po_numbers))}</div></details>'
@@ -4280,22 +4285,6 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
     )
     month_close_script = '''<script>
-    function addInvoiceEntry(button, formId) {
-      const row = button.closest("tr");
-      if (!row) return;
-      const numbers = row.querySelector(".invoice-new-numbers");
-      const amounts = row.querySelector(".invoice-new-amounts");
-      if (!numbers || !amounts) return;
-      const number = document.createElement("input");
-      number.className = "summary-invoice-input summary-invoice-number";
-      number.name = "invoice_number"; number.setAttribute("form", formId);
-      number.placeholder = "계산서 번호"; number.required = true;
-      const amount = document.createElement("input");
-      amount.className = "summary-invoice-input";
-      amount.name = "invoice_amount"; amount.setAttribute("form", formId);
-      amount.inputMode = "numeric"; amount.placeholder = "발행 금액"; amount.required = true;
-      numbers.appendChild(number); amounts.appendChild(amount); number.focus();
-    }
     async function submitMonthClose(month, actionName, button) {
       if (button) { button.disabled = true; button.textContent = "처리 중..."; }
       const body = new URLSearchParams(); body.set(actionName, month);
@@ -4918,8 +4907,20 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if action in {"add_invoice", "add_invoices"}:
         if action == "add_invoices":
-            numbers = [value.strip() for value in form.getlist("invoice_number") if value.strip()]
-            amount_texts = [value.strip() for value in form.getlist("invoice_amount") if value.strip()]
+            numbers, amount_texts = [], []
+            batch_text = form["invoice_batch"].value if "invoice_batch" in form else ""
+            for line in re.split(r"[\r\n]+", batch_text):
+                line = line.strip()
+                if not line:
+                    continue
+                columns = [value.strip() for value in line.split("\t")]
+                if len(columns) < 2:
+                    match = re.fullmatch(r"(\S+)\s+([0-9,]+)\s*원?", line)
+                    columns = [match.group(1), match.group(2)] if match else []
+                if len(columns) < 2:
+                    raise ValueError("엑셀에서 계산서 번호와 발행 금액 두 열을 함께 복사해 붙여넣어 주세요.")
+                numbers.append(columns[0])
+                amount_texts.append(columns[1])
         else:
             numbers = [form["invoice_number"].value.strip() if "invoice_number" in form else ""]
             amount_texts = [form["invoice_amount"].value.strip() if "invoice_amount" in form else ""]
