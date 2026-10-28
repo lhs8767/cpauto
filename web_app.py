@@ -4034,19 +4034,22 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
         label, css = "확인 필요", "status-warn"
     form_id = f'invoice-{re.sub(r"\D", "", day)}'
     invoice_lines = "".join(
-        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
-        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 계산서를 삭제할까요?\')">'
+        f'<form class="summary-invoice-actions" method="post" action="/sales/confirm">'
         f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
-        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
+        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}">'
+        f'<input class="summary-invoice-input summary-invoice-number" name="invoice_number" value="{html.escape(str(item.get("number", "")), quote=True)}" required>'
+        f'<input class="summary-invoice-input" name="invoice_amount" inputmode="numeric" value="{parse_int(item.get("amount", 0))}" required>'
+        f'<button class="confirm-action" name="action" value="update_invoice">수정</button>'
+        f'<button class="delete-btn" name="action" value="delete_invoice" onclick="return confirm(\'이 계산서를 삭제할까요?\')">삭제</button></form>'
         for item in invoices if isinstance(item, dict)
     )
     details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required></td>'
-        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required></td>'
+        f'<td><textarea class="summary-invoice-input summary-invoice-number" name="invoice_numbers" form="{form_id}" rows="3" placeholder="계산서 번호를 줄마다 입력" required></textarea></td>'
+        f'<td><textarea class="summary-invoice-input" name="invoice_amounts" form="{form_id}" rows="3" inputmode="numeric" placeholder="발행 금액을 같은 순서로 줄마다 입력" required></textarea></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
-        f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
-        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">추가</button></div>{details}</td>'
+        f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoices"></form>'
+        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">한번에 추가</button></div>{details}</td>'
     )
     return cells, issued, confirmed
 
@@ -4073,7 +4076,7 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
-    restore_sales_files_from_supabase(force=True)
+    restore_sales_files_from_supabase(force=False)
     close_data = load_sales_month_close()
     close_months = close_data.get("months", {}) if isinstance(close_data, dict) else {}
     if not isinstance(close_months, dict):
@@ -4178,15 +4181,21 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                         f'<tr class="month-folder is-closed{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}">'
                         f'<th colspan="8">{html.escape(month)} {mode_label} '
                         f'<button class="toggle-btn" type="button" onclick="toggleMonthFolder(\'{html.escape(month, quote=True)}\', this)">펼치기</button> '
-                        f'<button class="toggle-btn" type="submit" formmethod="post" formaction="/sales/month-close" name="{close_name}" value="{html.escape(month, quote=True)}">{close_label}</button> '
+                        f'<button class="toggle-btn" type="button" onclick="submitMonthClose(\'{html.escape(month, quote=True)}\', \'{close_name}\', this)">{close_label}</button> '
                         f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_month\" value=\"{html.escape(month, quote=True)}\" onclick=\"return confirmDeleteMonth(\'{html.escape(month, quote=True)}\')\">월 삭제</button>"}</th></tr>'
                     )
                 for day in by_month[month]:
                     day_qty = sum(row[4] for row in by_day[day])
                     day_amount = sum(row[6] for row in by_day[day])
+                    day_po_numbers = sorted({po for row in by_day[day] for po in split_po_numbers(row[7])})
+                    po_summary = (
+                        f'<details style="display:inline-block;margin-left:12px;"><summary style="cursor:pointer;color:#1d5686;font-weight:900;">발주서 총 {len(day_po_numbers)}개 보기</summary>'
+                        f'<div style="margin-top:7px;padding:8px 10px;border:1px solid #bfd2e5;border-radius:7px;background:#fff;font-weight:700;line-height:1.7;">{html.escape(", ".join(day_po_numbers))}</div></details>'
+                        if day_po_numbers else ""
+                    )
                     parts.append(
                         f'<tr class="detail-day-row{hidden_class}{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" data-day-total="{html.escape(str(day), quote=True)}" data-view-mode="{view_mode}" style="background:#e8f1fb;color:#1f4e79;">'
-                        f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 '
+                        f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 {po_summary} '
                         f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_day\" value=\"{html.escape(str(day), quote=True)}\" onclick=\"return confirmDeleteDay(\'{html.escape(str(day), quote=True)}\')\">일자 삭제</button>"}</th></tr>'
                     )
                     for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, manual_changed, amount_mismatch in sorted(by_day[day], key=lambda row: str(row[1])):
@@ -4227,7 +4236,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         else "업로드, 연도총매출, 일자별 합계, 해당월 납품 상품을 확인합니다."
     )
     detail_title = "월별 납품 상품 폴더" if folder_mode else f"{current_month} 납품 상품 내역"
-    return (
+    page = (
         SALES_PAGE
         .replace("{message}", message)
         .replace("{year_rows}", year_rows)
@@ -4246,6 +4255,21 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{upload_section_class}", "" if folder_mode else "not-shown")
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
     )
+    month_close_script = '''<script>
+    async function submitMonthClose(month, actionName, button) {
+      if (button) { button.disabled = true; button.textContent = "처리 중..."; }
+      const body = new URLSearchParams(); body.set(actionName, month);
+      try {
+        const response = await fetch("/sales/month-close", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:body.toString()});
+        if (!response.ok) throw new Error("마감 처리 실패");
+        location.href = "/sales/folders?month=" + encodeURIComponent(month) + "&month_action=" + encodeURIComponent(actionName === "close_month" ? month + " 마감을 완료했습니다." : month + " 재계산을 요청했습니다.");
+      } catch (error) {
+        if (button) { button.disabled = false; button.textContent = actionName === "close_month" ? "마감완료" : "재계산 요청"; }
+        alert("월 마감 처리 중 오류가 났습니다. 다시 시도해주세요.");
+      }
+    }
+    </script>'''
+    return inject_before_body_end(page, month_close_script)
 
 
 def normalize_simple_no(value: object) -> str:
@@ -4852,15 +4876,38 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
     invoices = record.setdefault("invoices", [])
     history = record.setdefault("history", [])
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if action == "add_invoice":
+    if action in {"add_invoice", "add_invoices"}:
+        if action == "add_invoices":
+            numbers = [value.strip() for value in re.split(r"[\r\n]+", form["invoice_numbers"].value if "invoice_numbers" in form else "") if value.strip()]
+            amount_texts = [value.strip() for value in re.split(r"[\r\n]+", form["invoice_amounts"].value if "invoice_amounts" in form else "") if value.strip()]
+        else:
+            numbers = [form["invoice_number"].value.strip() if "invoice_number" in form else ""]
+            amount_texts = [form["invoice_amount"].value.strip() if "invoice_amount" in form else ""]
+        if not numbers or len(numbers) != len(amount_texts):
+            raise ValueError("계산서 번호와 발행 금액을 같은 개수로 줄마다 입력해 주세요.")
+        existing_numbers = {str(item.get("number", "")) for item in invoices if isinstance(item, dict)}
+        if len(set(numbers)) != len(numbers) or any(number in existing_numbers for number in numbers):
+            raise ValueError("중복된 계산서 번호가 있습니다.")
+        for number, amount_text in zip(numbers, amount_texts):
+            amount = parse_int(amount_text)
+            if not number or amount <= 0:
+                raise ValueError("계산서 번호와 발행 금액을 모두 입력해 주세요.")
+            invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
+            history.append({"at": now, "user": username, "action": "계산서 추가", "reason": number, "changes": [{"field": "발행 금액", "before": 0, "after": amount}]})
+    elif action == "update_invoice":
+        invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
+        target = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
+        if target is None:
+            raise ValueError("수정할 계산서를 찾지 못했습니다.")
         number = form["invoice_number"].value.strip() if "invoice_number" in form else ""
         amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
         if not number or amount <= 0:
             raise ValueError("계산서 번호와 발행 금액을 입력해 주세요.")
-        if any(str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)):
+        if any(item is not target and str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)):
             raise ValueError("이미 등록된 계산서 번호입니다.")
-        invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
-        history.append({"at": now, "user": username, "action": "계산서 추가", "reason": number, "changes": [{"field": "발행 금액", "before": 0, "after": amount}]})
+        before_number, before_amount = str(target.get("number", "")), parse_int(target.get("amount", 0))
+        target.update({"number": number, "amount": amount, "user": username, "at": now})
+        history.append({"at": now, "user": username, "action": "계산서 수정", "reason": number, "changes": [{"field": "계산서 번호", "before": before_number, "after": number}, {"field": "발행 금액", "before": before_amount, "after": amount}]})
     elif action == "delete_invoice":
         invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
         removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
@@ -5086,6 +5133,31 @@ def render_contracts_page() -> str:
     </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><h1>쿠팡 계약 관리</h1><p class="intro">행사와 광고 계약의 기간과 금액을 쉬운 말로 정리한 화면입니다.</p><div class="guide">계약서 캡처나 파일을 보내주시면 기간, 실제 청구금액, VAT 여부를 정리합니다. 계약서에 없는 금액은 추측하지 않고 직접 입력할 수 있습니다.<br>전 제품 정률 할인은 할인율(1%·5% 등), 시작일·종료일, 유지기간(2개월·3개월), 비용 부담 주체와 중도해지·자동연장 조건까지 표시합니다.</div><div class="list">{"".join(parts)}</div></main></div></body></html>'''
 
 
+def contract_amount_without_vat(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or "%" in text:
+        return text
+    match = re.search(r"([\d,]+)\s*원", text)
+    if not match:
+        return text
+    amount = int(match.group(1).replace(",", ""))
+    if "VAT 포함" in text.upper():
+        amount = round(amount / 1.1)
+    return f"{amount:,}원"
+
+
+def contract_amount_total(rows: list[dict[str, object]], saved: dict[str, str]) -> int:
+    total = 0
+    for row in rows:
+        value = contract_amount_without_vat(saved.get(str(row.get("id", "")), "").strip() or str(row.get("amount", "")))
+        if "%" in value:
+            continue
+        match = re.search(r"([\d,]+)\s*원", value)
+        if match:
+            total += int(match.group(1).replace(",", ""))
+    return total
+
+
 def render_contracts_compact_page(selected_month: str = "") -> str:
     saved, uploads = load_contract_manual_amounts(), refresh_contract_extractions(load_contract_files_meta())
     saved_names = load_contract_names()
@@ -5095,7 +5167,8 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         selected_month = available_months[0]
     uploads = [item for item in uploads if (str(item.get("month", "")).strip() or str(item.get("uploaded_at", ""))[:7]) == selected_month]
     uploads_by_month: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for item in uploads:
+    pending_uploads = [item for item in uploads if str(item.get("extraction_status", "")) != "자동 반영"]
+    for item in pending_uploads:
         uploads_by_month[str(item.get("month", "")).strip() or str(item.get("uploaded_at", ""))[:7] or "미분류"].append(item)
     upload_groups = []
     for month, items in sorted(uploads_by_month.items(), reverse=True):
@@ -5116,11 +5189,11 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(status_text)}</small>'
             item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
-    upload_rows = "".join(upload_groups) or '<div class="empty">아직 올린 계약서가 없습니다.</div>'
+    upload_rows = "".join(upload_groups)
     rows = [
       {"id":"living_w42_43","kind":"즉시할인","title":"W42-43 WOW 리빙쇼 하반기","date":"10월 12일 ~ 10월 26일","exact":"10/12 07:00 시작 · 10/26 06:59 종료","amount":"금액 확인 필요","easy":"약 14일 동안 진행하는 즉시할인 행사","facts":[("대상","홈인테리어"),("참여 방식","자발")],"edit":True},
       {"id":"bonie_jjimhagi","kind":"쿠폰","title":"보니애가구 찜하기","date":"10월 14일 ~ 10월 31일","exact":"10/14 00:00 시작 · 10/31 23:59 종료","amount":"금액 확인 필요","easy":"전체 고객에게 다운로드 쿠폰을 제공하는 행사","facts":[("쿠폰 대상","전체 고객"),("발행 타겟","찜하기 고객"),("행사 대상","MemberSRL")],"edit":True},
-      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"광고 기간 2026-10-20 ~ 2026-10-28 · 세금계산서 발행일 10월 31일","amount":"5,500,000원 (VAT 포함)","easy":"10월 20일부터 28일까지 진행한 기존 배너 광고이며, 실제 결제 금액은 550만원","facts":[("광고 유형","배너 광고"),("전체 광고 한도","16,000,000원"),("이번 공급가","5,000,000원"),("VAT","500,000원")],"edit":True},
+      {"id":"october_banner_ad","kind":"광고","title":"10월 배너 광고","date":"10월 20일 ~ 10월 28일","exact":"광고 기간 2026-10-20 ~ 2026-10-28 · 세금계산서 발행일 10월 31일","amount":"5,000,000원","easy":"10월 20일부터 28일까지 진행한 기존 배너 광고이며, 공급가는 500만원","facts":[("광고 유형","배너 광고"),("전체 광고 한도","16,000,000원"),("공급가","5,000,000원"),("VAT 별도","500,000원")],"edit":True},
     ]
     uploaded_rows = []
     for item in uploads:
@@ -5138,7 +5211,7 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             "title": str(item.get("extracted_title", "")).strip() or Path(str(item.get("name", "계약 파일"))).stem,
             "date": period,
             "exact": exact,
-            "amount": str(item.get("extracted_amount", "")).strip() or "금액 확인 필요",
+            "amount": contract_amount_without_vat(str(item.get("extracted_amount", "")).strip()) or "금액 확인 필요",
             "easy": "업로드한 계약서에서 별도 계약으로 자동 등록했습니다.",
             "facts": [("원본 파일", str(item.get("name", ""))), ("처리 상태", str(item.get("extraction_status", "수기 확인 필요")))],
             "edit": True,
@@ -5147,16 +5220,27 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     visible_rows = (rows if selected_month == contract_month else []) + uploaded_rows
     for r in visible_rows:
         title = saved_names.get(r["id"], "").strip() or r["title"]
-        sv=saved.get(r["id"],"").strip(); amount=sv or r["amount"]; waiting="확인 필요" in amount
+        sv=saved.get(r["id"],"").strip(); amount=contract_amount_without_vat(sv or r["amount"]); waiting="확인 필요" in amount
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
         editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
         name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
         out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{name_editor}{editor}</section></details>')
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
-    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
+    confirmed_total = contract_amount_total(visible_rows, saved)
+    page = f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>쿠팡 계약 관리</title><style>
     *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#172033;font-family:"Malgun Gothic",Arial,sans-serif}}.app{{min-height:100vh;display:grid;grid-template-columns:230px minmax(0,1fr)}}aside{{background:#102f4b;color:white;padding:24px 18px}}.logo{{font-size:18px;font-weight:900;margin-bottom:28px}}.logo small{{display:block;color:#b8c8d9;font-size:12px}}.nav-item{{padding:12px 13px;border-radius:8px;color:#d9e7f3;margin-bottom:6px;cursor:pointer}}.nav-item:hover,.nav-item.active{{background:rgba(255,255,255,.13);font-weight:800}}main{{padding:26px}}.wrap{{max-width:1280px;margin:auto}}h1{{margin:0 0 5px}}.sub{{margin:0 0 16px;color:#667085}}.upload{{background:white;border:1px solid #cbd9e8;border-radius:10px;padding:15px;margin-bottom:14px}}.upload h2{{margin:0 0 10px;font-size:16px}}.upload>form{{display:flex;gap:8px}}.upload>form>input{{flex:1;border:1px dashed #9eb4ca;border-radius:7px;padding:9px}}button{{border:0;border-radius:7px;background:#1f5d8f;color:white;padding:9px 15px;font-weight:900}}.ul{{margin-top:10px;border-top:1px solid #e5ebf2}}.ur{{display:grid;grid-template-columns:minmax(220px,1fr) 145px minmax(310px,390px);align-items:center;gap:12px;padding:9px 3px;border-bottom:1px solid #edf1f5;font-size:12px}}.ur strong{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.ur a{{color:#1f5d8f;font-weight:900;text-decoration:none;white-space:nowrap}}.upload-actions{{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0}}.amount-form{{display:flex;align-items:center;gap:6px;min-width:0;flex:1}}.amount-form input{{min-width:0;width:100%;border:1px solid #b9c9da;border-radius:7px;padding:8px}}.amount-form button,.file-actions button{{padding:8px 11px;white-space:nowrap}}.file-actions{{display:flex;align-items:center;gap:7px;white-space:nowrap}}.file-actions form{{display:inline-flex;margin:0}}.empty{{padding:9px;color:#667085;font-size:12px}}.nums{{display:flex;gap:9px;margin-bottom:13px}}.nums div{{background:white;border:1px solid #d8e3ee;border-radius:8px;padding:10px 14px;min-width:150px}}.nums span{{display:block;color:#667085;font-size:11px}}.nums strong{{font-size:17px;color:#173f68}}.head,.row summary{{display:grid;grid-template-columns:90px minmax(230px,1fr) 190px 220px 90px 55px;gap:9px;align-items:center}}.head{{padding:7px 13px;color:#667085;font-size:11px;font-weight:900}}.row{{background:white;border:1px solid #d7e1ee;border-radius:8px;margin-bottom:8px;overflow:hidden}}.row summary{{padding:13px;cursor:pointer;list-style:none}}.row summary>b{{width:max-content;background:#1f5d8f;color:white;border-radius:5px;padding:5px 8px;font-size:11px}}.row summary>span{{color:#315b7d;font-weight:800}}.row summary>em{{font-style:normal;text-align:right;font-weight:900}}.row summary>i{{font-style:normal;text-align:center;border-radius:5px;padding:5px;font-size:11px;font-weight:900}}.wait{{background:#fff1cc;color:#8a5300}}.done{{background:#dcfae6;color:#067647}}.row summary>u{{text-decoration:none;color:#1f5d8f;font-size:11px;font-weight:900}}.row section{{padding:13px 17px;background:#f9fbfd;border-top:1px solid #e3e9f0}}.row p{{margin:0 0 8px;background:#eaf3fb;padding:10px;border-radius:6px}}.row small{{color:#52687d}}.facts{{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}}.facts div{{min-width:160px;background:white;border:1px solid #dce5ee;border-radius:6px;padding:8px}}.facts span{{display:block;color:#667085;font-size:10px}}.row section form{{display:flex;gap:8px;margin-top:10px}}.row section input{{flex:1;padding:8px;border:1px solid #b9c9da;border-radius:6px}}.note{{margin-top:13px;padding:12px;background:white;border:1px dashed #aebfd0;border-radius:7px;color:#38546e;font-size:12px}}@media(max-width:1100px){{.ur{{grid-template-columns:minmax(180px,1fr) 125px minmax(280px,340px)}}.upload-actions{{gap:7px}}}}@media(max-width:950px){{.head{{display:none}}.row summary{{grid-template-columns:85px 1fr 160px}}.row summary>i,.row summary>u{{display:none}}.ur{{grid-template-columns:minmax(180px,1fr) 120px}}.upload-actions{{grid-column:1/-1;justify-content:flex-end}}}}@media(max-width:700px){{.app{{grid-template-columns:1fr}}aside{{display:none}}main{{padding:14px}}.upload>form{{flex-direction:column}}.ur{{grid-template-columns:1fr}}.uploaded-at{{font-size:11px;color:#667085}}.upload-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.amount-form{{width:100%}}.file-actions{{justify-content:flex-end}}.nums{{flex-wrap:wrap}}.row summary{{grid-template-columns:75px 1fr}}.row summary>span,.row summary>em{{grid-column:2;text-align:left}}}}
     </style></head><body><div class="app"><aside><div class="logo">보니애가구<small>업무 시스템</small></div><div class="nav-item" onclick="location.href='/master'">쿠팡 기초자료 관리</div><div class="nav-item" onclick="location.href='/convert'">PO변환</div><div class="nav-item" onclick="location.href='/sales/folders'">월별납품관리</div><div class="nav-item" onclick="location.href='/check'">수량검수</div><div class="nav-item" onclick="location.href='/sales'">매출확인용</div><div class="nav-item" onclick="location.href='/pallet'">파렛트/쉽먼트</div></aside><main><div class="wrap"><h1>쿠팡 계약 관리</h1><p class="sub">계약서를 먼저 올리고, 기간과 실제 금액을 한눈에 확인하세요.</p><form class="month-filter" method="get" action="/contracts"><label>조회 월</label><select name="month" onchange="this.form.submit()">{month_options}</select></form><div class="upload"><h2>{selected_month[:4]}년 {int(selected_month[5:]):02d}월 계약서 파일 올리기</h2><form method="post" action="/contracts/upload" enctype="multipart/form-data"><input type="month" name="contract_month" value="{html.escape(selected_month, quote=True)}" required><input type="file" name="contract_file" accept=".png,.jpg,.jpeg,.pdf,.xlsx,.docx" required><button>파일 올리기</button></form><div class="ul">{upload_rows}</div></div><div class="nums"><div><span>{int(selected_month[5:])}월 정리된 계약</span><strong>{len(visible_rows)}건</strong></div><div><span>금액 입력 필요</span><strong>{sum(1 for r in visible_rows if "확인 필요" in (saved.get(r["id"], "").strip() or r["amount"]))}건</strong></div><div><span>확인된 청구액</span><strong>{"5,500,000원" if selected_month == contract_month else "0원"}</strong></div></div><h2 class="month-title">{selected_month[:4]}년 {int(selected_month[5:]):02d}월 계약 내역</h2><div class="head"><span>구분</span><span>행사·계약명</span><span>기간</span><span style="text-align:right">실제 금액</span><span>상태</span><span></span></div>{contract_rows}<div class="note"><b>전 제품 정률 할인</b>: 할인율(1%·5%), 기간, 유지기간(2개월·3개월), 비용 부담 주체를 함께 표시합니다.</div></div></main></div></body></html>'''
+    compact_css = '''
+    .month-filter{display:flex;align-items:center;gap:10px;width:max-content;margin:16px 0;padding:8px 10px;background:#fff;border:1px solid #d7e1ee;border-radius:9px;box-shadow:0 2px 8px rgba(16,47,75,.05)}
+    .month-filter label{font-size:12px;font-weight:800;color:#52687d}.month-filter select{appearance:none;min-width:132px;padding:8px 34px 8px 11px;border:1px solid #b9c9da;border-radius:7px;background:#f8fbfe;color:#173f68;font-size:13px;font-weight:800}
+    .month-title{margin:20px 0 10px;font-size:25px;letter-spacing:-.5px;color:#102f4b}.row summary{padding:9px 12px;font-size:12px}.row summary>strong{font-size:13px}.row summary>span,.row summary>em{font-size:12px}.row{margin-bottom:6px}.head{font-size:10px;padding:5px 12px}
+    '''
+    page = page.replace("</style>", compact_css + "</style>", 1)
+    page = page.replace('<div class="ul"></div>', '')
+    page = page.replace('<span style="text-align:right">실제 금액</span>', '<span style="text-align:right">실제 금액<br>(VAT 미포함)</span>')
+    page = re.sub(r'<span>확인된 청구액</span><strong>[^<]*</strong>', f'<span>확인된 청구액<br>(VAT 미포함)</span><strong>{confirmed_total:,}원</strong>', page, count=1)
+    return page
 
 
 class BonnieHandler(BaseHTTPRequestHandler):
