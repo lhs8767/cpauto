@@ -1035,6 +1035,8 @@ SALES_PAGE = """<!DOCTYPE html>
     .confirm-meta { margin-top:7px; color:#667085; font-size:12px; }
     .summary-invoice-input { width:100%; min-width:120px; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; text-align:right; background:#fff; }
     .summary-invoice-number { text-align:left; }
+    .invoice-new-numbers, .invoice-new-amounts { display:grid; gap:6px; }
+    .invoice-add-row { border:1px solid #1f5d8f; border-radius:6px; padding:7px 9px; background:#fff; color:#1f5d8f; font-weight:800; cursor:pointer; }
     .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .summary-invoice-detail { margin-top:6px; font-size:11px; }
     .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; }
@@ -3140,7 +3142,13 @@ def describe_sales_date_breakdown(lines) -> str:
 
 def split_po_numbers(value: object) -> list[str]:
     parts = []
-    for part in str(value or "").replace("PO:", "").split(","):
+    # 과거 파일에는 PO가 쉼표 외에도 줄바꿈, 슬래시, 공백으로 저장되어 있다.
+    # 화면의 일자별 PO 요약이 누락되지 않도록 7자리 이상의 숫자를 우선 추출한다.
+    raw = str(value or "").replace("PO:", "")
+    candidates = re.findall(r"\d{7,}", raw)
+    if not candidates:
+        candidates = re.split(r"[,/\r\n]+", raw)
+    for part in candidates:
         po_no = part.strip()
         if po_no and po_no not in parts:
             parts.append(po_no)
@@ -4061,11 +4069,11 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     )
     details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td><textarea class="summary-invoice-input summary-invoice-number" name="invoice_numbers" form="{form_id}" rows="3" placeholder="계산서 번호를 줄마다 입력" required></textarea></td>'
-        f'<td><textarea class="summary-invoice-input" name="invoice_amounts" form="{form_id}" rows="3" inputmode="numeric" placeholder="발행 금액을 같은 순서로 줄마다 입력" required></textarea></td>'
+        f'<td><div class="invoice-new-numbers"><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required></div></td>'
+        f'<td><div class="invoice-new-amounts"><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required></div></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
         f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoices"></form>'
-        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">한번에 추가</button></div>{details}</td>'
+        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="invoice-add-row" type="button" onclick="addInvoiceEntry(this, \'{form_id}\')">+ 입력줄 추가</button><button class="confirm-action" type="submit" form="{form_id}">한번에 저장</button></div>{details}</td>'
     )
     return cells, issued, confirmed
 
@@ -4272,6 +4280,22 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
     )
     month_close_script = '''<script>
+    function addInvoiceEntry(button, formId) {
+      const row = button.closest("tr");
+      if (!row) return;
+      const numbers = row.querySelector(".invoice-new-numbers");
+      const amounts = row.querySelector(".invoice-new-amounts");
+      if (!numbers || !amounts) return;
+      const number = document.createElement("input");
+      number.className = "summary-invoice-input summary-invoice-number";
+      number.name = "invoice_number"; number.setAttribute("form", formId);
+      number.placeholder = "계산서 번호"; number.required = true;
+      const amount = document.createElement("input");
+      amount.className = "summary-invoice-input";
+      amount.name = "invoice_amount"; amount.setAttribute("form", formId);
+      amount.inputMode = "numeric"; amount.placeholder = "발행 금액"; amount.required = true;
+      numbers.appendChild(number); amounts.appendChild(amount); number.focus();
+    }
     async function submitMonthClose(month, actionName, button) {
       if (button) { button.disabled = true; button.textContent = "처리 중..."; }
       const body = new URLSearchParams(); body.set(actionName, month);
@@ -4894,8 +4918,8 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if action in {"add_invoice", "add_invoices"}:
         if action == "add_invoices":
-            numbers = [value.strip() for value in re.split(r"[\r\n]+", form["invoice_numbers"].value if "invoice_numbers" in form else "") if value.strip()]
-            amount_texts = [value.strip() for value in re.split(r"[\r\n]+", form["invoice_amounts"].value if "invoice_amounts" in form else "") if value.strip()]
+            numbers = [value.strip() for value in form.getlist("invoice_number") if value.strip()]
+            amount_texts = [value.strip() for value in form.getlist("invoice_amount") if value.strip()]
         else:
             numbers = [form["invoice_number"].value.strip() if "invoice_number" in form else ""]
             amount_texts = [form["invoice_amount"].value.strip() if "invoice_amount" in form else ""]
