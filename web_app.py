@@ -3013,7 +3013,10 @@ def render_new_master_popup(items: list[dict[str, str]]) -> str:
 def inject_before_body_end(page: str, fragment: str) -> str:
     if not fragment:
         return page
-    return page.replace("</body>", fragment + "</body>", 1)
+    head, separator, tail = page.rpartition("</body>")
+    if not separator:
+        return page + fragment
+    return head + fragment + separator + tail
 
 
 def get_master_amounts_by_sku() -> dict[str, int]:
@@ -3310,7 +3313,7 @@ def rebuild_monthly_sales_from_uploaded_pos() -> tuple[int, int, int]:
     saved_count, total_amount = update_monthly_sales(all_lines)
     return len(latest_by_po), saved_count, total_amount
 
-def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
