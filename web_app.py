@@ -1690,9 +1690,11 @@ SALES_PAGE = """<!DOCTYPE html>
       return confirmed;
     }
     function preparePoRecheck(form) {
-      var po = (document.getElementById("detail-po-select")?.value || "").trim();
+      var keyword = (document.getElementById("detail-keyword")?.value || "").trim();
+      var selectedPo = (document.getElementById("detail-po-select")?.value || "").trim();
+      var po = /^\\d{6,}$/.test(keyword) ? keyword : selectedPo;
       if (!/^\\d{6,}$/.test(po)) {
-        alert("위의 PO 선택에서 금액을 재확인할 PO 번호를 먼저 선택해주세요.");
+        alert("스큐/상품명/PO/메모 검색창에 정확한 PO 번호를 입력해 조회해주세요.");
         return false;
       }
       var rows = Array.from(document.querySelectorAll('.detail-row[data-view-mode="po"]')).filter(function(row) {
@@ -4222,7 +4224,7 @@ def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
         )
     list_html = "".join(rows) or '<div class="po-recheck-empty">등록된 PO 금액 재확인 항목이 없습니다.</div>'
     return (
-        '<section class="po-recheck-box"><div class="po-recheck-guide"><strong>PO 금액 재확인</strong><span>위의 PO 선택에서 번호를 고른 뒤 바로 등록하세요.</span></div>'
+        '<section class="po-recheck-box"><div class="po-recheck-guide"><strong>PO 금액 재확인</strong><span>검색창에 PO 번호를 입력해 조회한 뒤 ‘금액 재확인 추가’를 누르세요.</span></div>'
         f'<details class="po-recheck-list"><summary>확인용 목록 {len(records)}건 보기</summary>{list_html}</details></section>'
     )
 
