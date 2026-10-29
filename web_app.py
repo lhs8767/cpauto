@@ -1539,18 +1539,23 @@ SALES_PAGE = """<!DOCTYPE html>
       }
       var selectedPo = (detailPoSelect?.value || "").trim();
       var availablePo = {};
-      document.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
-        if (linkedDetailMonth && (row.dataset.month || "") !== linkedDetailMonth) return;
-        if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
-        getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
-      });
+      var detailDatesReady = !!detailFrom && !!detailTo;
+      if (detailDatesReady) {
+        document.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
+          if (folderFilterActive && selectedFolderMonth && (row.dataset.month || "") !== selectedFolderMonth) return;
+          if (linkedDetailMonth && (row.dataset.month || "") !== linkedDetailMonth) return;
+          if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
+          getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
+        });
+      }
       document.querySelectorAll(".po-recheck-item").forEach(function(item) {
         item.style.display = !selectedFolderMonth || item.dataset.month === selectedFolderMonth ? "" : "none";
       });
       if (detailPoSelect) {
         var previousPo = selectedPo;
         var poOptions = Object.keys(availablePo).sort();
-        detailPoSelect.innerHTML = '<option value="">전체 PO</option>' + poOptions.map(function(po) {
+        var poPlaceholder = detailDatesReady ? "PO 선택" : "날짜를 먼저 선택";
+        detailPoSelect.innerHTML = '<option value="" disabled>' + poPlaceholder + '</option>' + poOptions.map(function(po) {
           return '<option value="' + cleanAttr(po) + '">' + cleanText(po) + '</option>';
         }).join("");
         detailPoSelect.value = poOptions.includes(previousPo) ? previousPo : "";
@@ -2117,7 +2122,7 @@ SALES_PAGE = """<!DOCTYPE html>
             </label>
             <label>PO 선택
               <select id="detail-po-select">
-                <option value="">전체 PO</option>
+                <option value="" disabled selected>날짜를 먼저 선택</option>
               </select>
             </label>
             <form class="po-recheck-top-form" method="post" action="/sales/po-recheck" onsubmit="return preparePoRecheck(this)">
