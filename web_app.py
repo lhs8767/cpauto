@@ -1109,6 +1109,10 @@ SALES_PAGE = """<!DOCTYPE html>
     .detail-table th:nth-child(6), .detail-table td:nth-child(6) { white-space:nowrap; }
     .detail-table td:nth-child(3), .detail-table td:nth-child(4), .detail-table td:nth-child(5) { text-align:right; }
     .po-recheck-box { margin:0; border-top:1px solid #d9e6f2; border-bottom:1px solid #d9e6f2; background:#f8fbff; }
+    .po-recheck-top-form { display:flex; align-items:end; }
+    .po-recheck-top-form .btn { width:100%; min-height:34px; padding:7px 10px; }
+    .po-recheck-guide { display:flex; align-items:center; gap:12px; padding:8px 14px; font-size:12px; color:#52687d; }
+    .po-recheck-guide strong { color:#173f68; font-size:13px; }
     .po-recheck-add { display:grid; grid-template-columns:auto minmax(280px,1fr) minmax(220px,1fr) auto; gap:8px; align-items:center; padding:9px 14px; }
     .po-recheck-add strong { color:#173f68; white-space:nowrap; }
     .po-recheck-add select,.po-recheck-add input,.po-recheck-item input { min-width:0; border:1px solid #b9c9da; border-radius:6px; padding:8px 9px; background:#fff; }
@@ -1540,20 +1544,6 @@ SALES_PAGE = """<!DOCTYPE html>
         if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
         getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
       });
-      var recheckSelect = document.getElementById("po-recheck-select");
-      if (recheckSelect) {
-        var keptValue = recheckSelect.value;
-        Array.from(recheckSelect.options).forEach(function(option, index) {
-          if (!index) return;
-          var day = option.dataset.day || "";
-          var month = option.dataset.month || "";
-          var monthMatched = folderFilterActive ? (!selectedFolderMonth || month === selectedFolderMonth) : (!linkedDetailMonth || month === linkedDetailMonth);
-          option.hidden = !monthMatched || !inDateRange(day, detailFrom, detailTo);
-        });
-        var selectedOption = recheckSelect.selectedOptions[0];
-        if (selectedOption && selectedOption.hidden) recheckSelect.value = "";
-        else recheckSelect.value = keptValue;
-      }
       document.querySelectorAll(".po-recheck-item").forEach(function(item) {
         item.style.display = !selectedFolderMonth || item.dataset.month === selectedFolderMonth ? "" : "none";
       });
@@ -1698,6 +1688,29 @@ SALES_PAGE = """<!DOCTYPE html>
       var confirmed = confirmExactDelete("PO " + po + "의 상품 " + matches.length + "줄 전체", po);
       if (confirmed) form.querySelector('input[name="confirm_po"]').value = po;
       return confirmed;
+    }
+    function preparePoRecheck(form) {
+      var po = (document.getElementById("detail-po-select")?.value || "").trim();
+      if (!/^\\d{6,}$/.test(po)) {
+        alert("위의 PO 선택에서 금액을 재확인할 PO 번호를 먼저 선택해주세요.");
+        return false;
+      }
+      var rows = Array.from(document.querySelectorAll('.detail-row[data-view-mode="po"]')).filter(function(row) {
+        var poList = (row.dataset.poList || "").split(",").map(function(value) { return value.trim(); });
+        return row.style.display !== "none" && poList.includes(po);
+      });
+      if (!rows.length) {
+        alert("현재 조회 결과에서 선택한 PO의 금액을 찾지 못했습니다.");
+        return false;
+      }
+      var days = Array.from(new Set(rows.map(function(row) { return row.dataset.day || ""; }).filter(Boolean)));
+      if (days.length !== 1) {
+        alert("선택한 PO가 여러 날짜에 있습니다. 시작일과 종료일로 한 날짜를 먼저 선택해주세요.");
+        return false;
+      }
+      var amount = rows.reduce(function(total, row) { return total + parseMoney(row.querySelector(".row-amount")?.textContent || "0"); }, 0);
+      form.querySelector('input[name="po_choice"]').value = days[0] + "|" + po + "|" + amount;
+      return true;
     }
     function setLookupDeleteMonth(form) {
       var from = document.getElementById("detail-from")?.value || "";
@@ -2105,6 +2118,11 @@ SALES_PAGE = """<!DOCTYPE html>
                 <option value="">전체 PO</option>
               </select>
             </label>
+            <form class="po-recheck-top-form" method="post" action="/sales/po-recheck" onsubmit="return preparePoRecheck(this)">
+              <input type="hidden" name="po_choice" value="">
+              <input type="hidden" name="action" value="add">
+              <button class="btn" type="submit">금액 재확인 추가</button>
+            </form>
             <label>스큐/상품명/PO/메모
               <input id="detail-keyword" type="search" placeholder="찾을 내용 입력">
             </label>
@@ -4180,18 +4198,6 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 
 def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
-    candidates: dict[tuple[str, str], int] = defaultdict(int)
-    for row in po_rows:
-        if len(row) < 9:
-            continue
-        day, amount = str(row[1]), parse_int(row[7])
-        for po_no in split_po_numbers(row[8]):
-            candidates[(day, po_no)] += amount
-    registered = {str(item.get("po_no", "")) for item in load_sales_po_rechecks()}
-    options = [
-        f'<option value="{html.escape(day + "|" + po_no + "|" + str(amount), quote=True)}" data-day="{html.escape(day, quote=True)}" data-month="{html.escape(day[:7], quote=True)}">{html.escape(day)} · PO {html.escape(po_no)} · {amount:,}원</option>'
-        for (day, po_no), amount in sorted(candidates.items(), reverse=True) if po_no not in registered
-    ]
     records = sorted(load_sales_po_rechecks(), key=lambda item: (str(item.get("status")) == "complete", str(item.get("day", "")), str(item.get("po_no", ""))))
     rows = []
     for item in records:
@@ -4216,10 +4222,7 @@ def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
         )
     list_html = "".join(rows) or '<div class="po-recheck-empty">등록된 PO 금액 재확인 항목이 없습니다.</div>'
     return (
-        '<section class="po-recheck-box"><form class="po-recheck-add" method="post" action="/sales/po-recheck">'
-        '<strong>PO 금액 재확인</strong><select id="po-recheck-select" name="po_choice" required><option value="">조회 결과에서 PO 선택</option>'
-        + "".join(options) +
-        '</select><input name="memo" placeholder="비고(선택)"><button name="action" value="add">확인 목록 추가</button></form>'
+        '<section class="po-recheck-box"><div class="po-recheck-guide"><strong>PO 금액 재확인</strong><span>위의 PO 선택에서 번호를 고른 뒤 바로 등록하세요.</span></div>'
         f'<details class="po-recheck-list"><summary>확인용 목록 {len(records)}건 보기</summary>{list_html}</details></section>'
     )
 
