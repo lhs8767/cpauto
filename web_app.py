@@ -43,6 +43,7 @@ SALES_PRICE_EDITS_PATH = DATA_DIR / "납품단가_수정이력.json"
 SALES_ADJUSTMENTS_PATH = DATA_DIR / "납품수량_메모_수정값.json"
 SALES_PO_UPLOADS_PATH = DATA_DIR / "납품PO_업로드이력.json"
 SALES_MONTH_CLOSE_PATH = DATA_DIR / "월마감_계산캐시.json"
+SALES_PO_RECHECK_PATH = DATA_DIR / "PO_금액재확인.json"
 GROWTH_INCENTIVE_PATH = DATA_DIR / "성장장려금_기초자료.json"
 TESTER_FILES_DIR = DATA_DIR / "체험단_자료"
 TESTER_FILES_META_PATH = DATA_DIR / "체험단_파일목록.json"
@@ -216,6 +217,64 @@ def save_sales_adjustments(data: dict[str, dict[str, object]]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SALES_ADJUSTMENTS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("sales_adjustments", SALES_ADJUSTMENTS_PATH)
+
+
+def load_sales_po_rechecks() -> list[dict[str, object]]:
+    restore_file_from_supabase("sales_po_rechecks", SALES_PO_RECHECK_PATH)
+    if not SALES_PO_RECHECK_PATH.exists():
+        return []
+    try:
+        data = json.loads(SALES_PO_RECHECK_PATH.read_text(encoding="utf-8"))
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_sales_po_rechecks(items: list[dict[str, object]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SALES_PO_RECHECK_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("sales_po_rechecks", SALES_PO_RECHECK_PATH)
+
+
+def update_sales_po_recheck(form: dict[str, str], username: str) -> str:
+    items = load_sales_po_rechecks()
+    action = form.get("action", "add").strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if action == "add":
+        raw = form.get("po_choice", "").strip()
+        parts = raw.split("|", 2)
+        if len(parts) != 3 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[0]) or not re.fullmatch(r"\d{6,}", parts[1]):
+            raise ValueError("조회 결과에서 재확인할 PO를 선택해주세요.")
+        day, po_no, amount_text = parts
+        if any(str(item.get("po_no")) == po_no for item in items):
+            raise ValueError(f"PO {po_no}는 이미 재확인 목록에 있습니다.")
+        items.append({"id": uuid.uuid4().hex[:12], "month": day[:7], "day": day, "po_no": po_no, "amount": parse_int(amount_text), "memo": form.get("memo", "").strip(), "status": "checking", "created_at": now, "created_by": username, "completed_at": ""})
+        message = f"PO {po_no}를 금액 재확인 목록에 추가했습니다."
+    else:
+        item_id = form.get("item_id", "").strip()
+        target = next((item for item in items if str(item.get("id")) == item_id), None)
+        if target is None:
+            raise ValueError("재확인 항목을 찾지 못했습니다.")
+        po_no = str(target.get("po_no", ""))
+        if action == "save":
+            target["memo"] = form.get("memo", "").strip()
+            target["updated_at"] = now
+            target["updated_by"] = username
+            message = f"PO {po_no} 비고를 저장했습니다."
+        elif action == "complete":
+            target["status"] = "complete"; target["completed_at"] = now; target["completed_by"] = username
+            message = f"PO {po_no} 확인을 완료했습니다."
+        elif action == "reopen":
+            target["status"] = "checking"; target["completed_at"] = ""; target["completed_by"] = ""
+            message = f"PO {po_no}를 재확인 상태로 변경했습니다."
+        elif action == "delete":
+            items.remove(target)
+            message = f"PO {po_no} 재확인 항목을 삭제했습니다."
+        else:
+            raise ValueError("처리 방법이 올바르지 않습니다.")
+    items.sort(key=lambda item: (str(item.get("status")) == "complete", str(item.get("day", "")), str(item.get("po_no", ""))), reverse=False)
+    save_sales_po_rechecks(items)
+    return message
 
 
 def sales_confirmation(month: str) -> dict[str, object]:
@@ -1035,7 +1094,6 @@ SALES_PAGE = """<!DOCTYPE html>
     .confirm-meta { margin-top:7px; color:#667085; font-size:12px; }
     .summary-invoice-input { width:100%; min-width:120px; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; text-align:right; background:#fff; }
     .summary-invoice-number { text-align:left; }
-    .invoice-batch-input { width:100%; min-height:54px; resize:vertical; border:1px solid #b9c6d8; border-radius:6px; padding:8px 10px; background:#fff; font:inherit; line-height:1.5; }
     .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .summary-invoice-detail { margin-top:6px; font-size:11px; }
     .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; }
@@ -1050,6 +1108,20 @@ SALES_PAGE = """<!DOCTYPE html>
     .detail-table th:nth-child(5), .detail-table td:nth-child(5),
     .detail-table th:nth-child(6), .detail-table td:nth-child(6) { white-space:nowrap; }
     .detail-table td:nth-child(3), .detail-table td:nth-child(4), .detail-table td:nth-child(5) { text-align:right; }
+    .po-recheck-box { margin:0; border-top:1px solid #d9e6f2; border-bottom:1px solid #d9e6f2; background:#f8fbff; }
+    .po-recheck-add { display:grid; grid-template-columns:auto minmax(280px,1fr) minmax(220px,1fr) auto; gap:8px; align-items:center; padding:9px 14px; }
+    .po-recheck-add strong { color:#173f68; white-space:nowrap; }
+    .po-recheck-add select,.po-recheck-add input,.po-recheck-item input { min-width:0; border:1px solid #b9c9da; border-radius:6px; padding:8px 9px; background:#fff; }
+    .po-recheck-add button,.po-recheck-item button { border:0; border-radius:6px; padding:8px 10px; background:#1f5d8f; color:#fff; font-weight:800; cursor:pointer; white-space:nowrap; }
+    .po-recheck-list { border-top:1px solid #d9e6f2; }
+    .po-recheck-list summary { padding:8px 14px; cursor:pointer; color:#1f5d8f; font-size:12px; font-weight:900; }
+    .po-recheck-item { display:grid; grid-template-columns:90px 95px 125px 120px minmax(220px,1fr) auto auto auto; gap:7px; align-items:center; padding:7px 14px; border-top:1px solid #e5edf5; font-size:12px; }
+    .po-recheck-item.is-complete { background:#f0fbf4; color:#426052; }
+    .po-recheck-status { border-radius:999px; padding:5px 8px; background:#fff1cc; color:#854a0e; text-align:center; font-weight:900; }
+    .po-recheck-item.is-complete .po-recheck-status { background:#dcfae6; color:#067647; }
+    .po-recheck-item small { grid-column:1/-1; color:#667085; }
+    .po-recheck-empty { padding:10px 14px; color:#667085; font-size:12px; }
+    @media(max-width:1000px) { .po-recheck-add { grid-template-columns:1fr; }.po-recheck-item { grid-template-columns:1fr 1fr; }.po-recheck-item input { grid-column:1/-1; } }
     .qty-input, .memo-input { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; font:inherit; background:#fff; }
     .money-input { width:100%; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; font:inherit; background:#fff; text-align:right; }
     .qty-input { text-align:right; min-width:64px; }
@@ -1467,6 +1539,23 @@ SALES_PAGE = """<!DOCTYPE html>
         if (linkedDetailMonth && (row.dataset.month || "") !== linkedDetailMonth) return;
         if (!inDateRange(row.dataset.day, detailFrom, detailTo)) return;
         getRowPoList(row).forEach(function(po) { availablePo[po] = true; });
+      });
+      var recheckSelect = document.getElementById("po-recheck-select");
+      if (recheckSelect) {
+        var keptValue = recheckSelect.value;
+        Array.from(recheckSelect.options).forEach(function(option, index) {
+          if (!index) return;
+          var day = option.dataset.day || "";
+          var month = option.dataset.month || "";
+          var monthMatched = folderFilterActive ? (!selectedFolderMonth || month === selectedFolderMonth) : (!linkedDetailMonth || month === linkedDetailMonth);
+          option.hidden = !monthMatched || !inDateRange(day, detailFrom, detailTo);
+        });
+        var selectedOption = recheckSelect.selectedOptions[0];
+        if (selectedOption && selectedOption.hidden) recheckSelect.value = "";
+        else recheckSelect.value = keptValue;
+      }
+      document.querySelectorAll(".po-recheck-item").forEach(function(item) {
+        item.style.display = !selectedFolderMonth || item.dataset.month === selectedFolderMonth ? "" : "none";
       });
       if (detailPoSelect) {
         var previousPo = selectedPo;
@@ -2034,6 +2123,7 @@ SALES_PAGE = """<!DOCTYPE html>
               <button class="delete-btn" type="submit">조회 월 삭제</button>
             </form>
           </div>
+          {po_recheck_panel}
           <div class="detail-result-bar">
             <div class="detail-result-summary">
               <span>검색 결과 <strong id="detail-result-count">0건</strong></span>
@@ -3141,13 +3231,7 @@ def describe_sales_date_breakdown(lines) -> str:
 
 def split_po_numbers(value: object) -> list[str]:
     parts = []
-    # 과거 파일에는 PO가 쉼표 외에도 줄바꿈, 슬래시, 공백으로 저장되어 있다.
-    # 화면의 일자별 PO 요약이 누락되지 않도록 7자리 이상의 숫자를 우선 추출한다.
-    raw = str(value or "").replace("PO:", "")
-    candidates = re.findall(r"\d{7,}", raw)
-    if not candidates:
-        candidates = re.split(r"[,/\r\n]+", raw)
-    for part in candidates:
+    for part in str(value or "").replace("PO:", "").split(","):
         po_no = part.strip()
         if po_no and po_no not in parts:
             parts.append(po_no)
@@ -3333,7 +3417,7 @@ def rebuild_monthly_sales_from_uploaded_pos() -> tuple[int, int, int]:
     saved_count, total_amount = update_monthly_sales(all_lines)
     return len(latest_by_po), saved_count, total_amount
 
-def load_monthly_sales_summary(limit_rows: int | None = None, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -4057,21 +4141,19 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
         label, css = "확인 필요", "status-warn"
     form_id = f'invoice-{re.sub(r"\D", "", day)}'
     invoice_lines = "".join(
-        f'<form class="summary-invoice-actions" method="post" action="/sales/confirm">'
+        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
+        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 계산서를 삭제할까요?\')">'
         f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
-        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}">'
-        f'<input class="summary-invoice-input summary-invoice-number" name="invoice_number" value="{html.escape(str(item.get("number", "")), quote=True)}" required>'
-        f'<input class="summary-invoice-input" name="invoice_amount" inputmode="numeric" value="{parse_int(item.get("amount", 0))}" required>'
-        f'<button class="confirm-action" name="action" value="update_invoice">수정</button>'
-        f'<button class="delete-btn" name="action" value="delete_invoice" onclick="return confirm(\'이 계산서를 삭제할까요?\')">삭제</button></form>'
+        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
         for item in invoices if isinstance(item, dict)
     )
     details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td colspan="2"><textarea class="invoice-batch-input" name="invoice_batch" form="{form_id}" rows="2" placeholder="엑셀의 계산서 번호·발행 금액 두 열을 여러 행 선택하여 한 번에 붙여넣으세요." required></textarea></td>'
+        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required></td>'
+        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
-        f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoices"></form>'
-        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">한번에 추가</button></div>{details}</td>'
+        f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
+        f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">추가</button></div>{details}</td>'
     )
     return cells, issued, confirmed
 
@@ -4097,6 +4179,51 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
     )
 
 
+def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
+    candidates: dict[tuple[str, str], int] = defaultdict(int)
+    for row in po_rows:
+        if len(row) < 9:
+            continue
+        day, amount = str(row[1]), parse_int(row[7])
+        for po_no in split_po_numbers(row[8]):
+            candidates[(day, po_no)] += amount
+    registered = {str(item.get("po_no", "")) for item in load_sales_po_rechecks()}
+    options = [
+        f'<option value="{html.escape(day + "|" + po_no + "|" + str(amount), quote=True)}" data-day="{html.escape(day, quote=True)}" data-month="{html.escape(day[:7], quote=True)}">{html.escape(day)} · PO {html.escape(po_no)} · {amount:,}원</option>'
+        for (day, po_no), amount in sorted(candidates.items(), reverse=True) if po_no not in registered
+    ]
+    records = sorted(load_sales_po_rechecks(), key=lambda item: (str(item.get("status")) == "complete", str(item.get("day", "")), str(item.get("po_no", ""))))
+    rows = []
+    for item in records:
+        complete = str(item.get("status")) == "complete"
+        item_id = html.escape(str(item.get("id", "")), quote=True)
+        memo = html.escape(str(item.get("memo", "")), quote=True)
+        status_label = "확인 완료" if complete else "금액 확인 중"
+        status_button = (
+            '<button class="po-recheck-reopen" name="action" value="reopen">재확인</button>'
+            if complete else '<button class="po-recheck-complete" name="action" value="complete">확인 완료</button>'
+        )
+        completed = f' · 완료 {html.escape(str(item.get("completed_at", "")))}' if complete and item.get("completed_at") else ""
+        rows.append(
+            f'<form class="po-recheck-item {"is-complete" if complete else "is-checking"}" data-month="{html.escape(str(item.get("month", "")), quote=True)}" method="post" action="/sales/po-recheck">'
+            f'<input type="hidden" name="item_id" value="{item_id}"><input type="hidden" name="month" value="{html.escape(str(item.get("month", "")), quote=True)}"><span class="po-recheck-status">{status_label}</span>'
+            f'<strong>{html.escape(str(item.get("day", "")))}</strong><strong>PO {html.escape(str(item.get("po_no", "")))}</strong>'
+            f'<strong class="po-recheck-amount">{parse_int(item.get("amount", 0)):,}원</strong>'
+            f'<input name="memo" value="{memo}" placeholder="비고 입력·수정">'
+            f'<button name="action" value="save">비고 저장</button>{status_button}'
+            f'<button class="delete-btn" name="action" value="delete" onclick="return confirm(\'이 PO 재확인 항목을 삭제할까요?\')">삭제</button>'
+            f'<small>{completed}</small></form>'
+        )
+    list_html = "".join(rows) or '<div class="po-recheck-empty">등록된 PO 금액 재확인 항목이 없습니다.</div>'
+    return (
+        '<section class="po-recheck-box"><form class="po-recheck-add" method="post" action="/sales/po-recheck">'
+        '<strong>PO 금액 재확인</strong><select id="po-recheck-select" name="po_choice" required><option value="">조회 결과에서 PO 선택</option>'
+        + "".join(options) +
+        '</select><input name="memo" placeholder="비고(선택)"><button name="action" value="add">확인 목록 추가</button></form>'
+        f'<details class="po-recheck-list"><summary>확인용 목록 {len(records)}건 보기</summary>{list_html}</details></section>'
+    )
+
+
 def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     restore_sales_files_from_supabase(force=False)
     close_data = load_sales_month_close()
@@ -4114,6 +4241,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
     summary_default_month = current_month
     visible_detail_rows = detail_rows
     visible_po_detail_rows = po_detail_rows if folder_mode else []
+    po_recheck_panel = render_po_recheck_panel(visible_po_detail_rows) if folder_mode else ""
     sales_price_edits = load_sales_price_edits()
     if summary_rows:
         def sales_extra_amounts(amount: int) -> tuple[int, int]:
@@ -4175,10 +4303,6 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         summary_html = '<div class="summary-month-section"><div class="summary-month-body"><table class="summary-table"><tbody><tr><td colspan="6">아직 누적된 월매출 자료가 없습니다.</td></tr></tbody></table></div></div>'
 
     if visible_detail_rows:
-        po_numbers_by_day = defaultdict(set)
-        for po_row in visible_po_detail_rows:
-            if len(po_row) > 8:
-                po_numbers_by_day[str(po_row[1])].update(split_po_numbers(po_row[8]))
         detail_sources = [("sku", visible_detail_rows)]
         if folder_mode:
             po_rows = []
@@ -4207,24 +4331,15 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
                         f'<tr class="month-folder is-closed{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}">'
                         f'<th colspan="8">{html.escape(month)} {mode_label} '
                         f'<button class="toggle-btn" type="button" onclick="toggleMonthFolder(\'{html.escape(month, quote=True)}\', this)">펼치기</button> '
-                        f'<button class="toggle-btn" type="button" onclick="submitMonthClose(\'{html.escape(month, quote=True)}\', \'{close_name}\', this)">{close_label}</button> '
+                        f'<button class="toggle-btn" type="submit" formmethod="post" formaction="/sales/month-close" name="{close_name}" value="{html.escape(month, quote=True)}">{close_label}</button> '
                         f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_month\" value=\"{html.escape(month, quote=True)}\" onclick=\"return confirmDeleteMonth(\'{html.escape(month, quote=True)}\')\">월 삭제</button>"}</th></tr>'
                     )
                 for day in by_month[month]:
                     day_qty = sum(row[4] for row in by_day[day])
                     day_amount = sum(row[6] for row in by_day[day])
-                    day_po_numbers = sorted(
-                        po_numbers_by_day.get(str(day), set())
-                        or {po for row in by_day[day] for po in split_po_numbers(row[7])}
-                    )
-                    po_summary = (
-                        f'<details style="display:inline-block;margin-left:12px;"><summary style="cursor:pointer;color:#1d5686;font-weight:900;">발주서 총 {len(day_po_numbers)}개 보기</summary>'
-                        f'<div style="margin-top:7px;padding:8px 10px;border:1px solid #bfd2e5;border-radius:7px;background:#fff;font-weight:700;line-height:1.7;">{html.escape(", ".join(day_po_numbers))}</div></details>'
-                        if day_po_numbers else ""
-                    )
                     parts.append(
                         f'<tr class="detail-day-row{hidden_class}{mode_hidden}" data-view-mode="{view_mode}" data-month="{html.escape(month, quote=True)}" data-day="{html.escape(str(day), quote=True)}"><th colspan="8" data-day-total="{html.escape(str(day), quote=True)}" data-view-mode="{view_mode}" style="background:#e8f1fb;color:#1f4e79;">'
-                        f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 {po_summary} '
+                        f'{html.escape(str(day))} 합계: 수량 {day_qty:,}개 / 금액 {day_amount:,}원 '
                         f'{"" if view_mode == "sku" else f"<button class=\"delete-btn\" type=\"submit\" formaction=\"/sales/delete\" name=\"delete_day\" value=\"{html.escape(str(day), quote=True)}\" onclick=\"return confirmDeleteDay(\'{html.escape(str(day), quote=True)}\')\">일자 삭제</button>"}</th></tr>'
                     )
                     for row_no, sku, name, original_qty, qty, unit_price, amount, remarks, memo, manual_changed, amount_mismatch in sorted(by_day[day], key=lambda row: str(row[1])):
@@ -4265,13 +4380,14 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         else "업로드, 연도총매출, 일자별 합계, 해당월 납품 상품을 확인합니다."
     )
     detail_title = "월별 납품 상품 폴더" if folder_mode else f"{current_month} 납품 상품 내역"
-    page = (
+    return (
         SALES_PAGE
         .replace("{message}", message)
         .replace("{year_rows}", year_rows)
         .replace("{tester_files}", render_tester_files())
         .replace("{summary_rows}", summary_html)
         .replace("{detail_rows}", detail_html)
+        .replace("{po_recheck_panel}", po_recheck_panel)
         .replace("{page_title}", page_title)
         .replace("{page_sub}", page_sub)
         .replace("{detail_title}", detail_title)
@@ -4284,21 +4400,6 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{upload_section_class}", "" if folder_mode else "not-shown")
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
     )
-    month_close_script = '''<script>
-    async function submitMonthClose(month, actionName, button) {
-      if (button) { button.disabled = true; button.textContent = "처리 중..."; }
-      const body = new URLSearchParams(); body.set(actionName, month);
-      try {
-        const response = await fetch("/sales/month-close", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:body.toString()});
-        if (!response.ok) throw new Error("마감 처리 실패");
-        location.href = "/sales/folders?month=" + encodeURIComponent(month) + "&month_action=" + encodeURIComponent(actionName === "close_month" ? month + " 마감을 완료했습니다." : month + " 재계산을 요청했습니다.");
-      } catch (error) {
-        if (button) { button.disabled = false; button.textContent = actionName === "close_month" ? "마감완료" : "재계산 요청"; }
-        alert("월 마감 처리 중 오류가 났습니다. 다시 시도해주세요.");
-      }
-    }
-    </script>'''
-    return inject_before_body_end(page, month_close_script)
 
 
 def normalize_simple_no(value: object) -> str:
@@ -4905,50 +5006,15 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
     invoices = record.setdefault("invoices", [])
     history = record.setdefault("history", [])
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if action in {"add_invoice", "add_invoices"}:
-        if action == "add_invoices":
-            numbers, amount_texts = [], []
-            batch_text = form["invoice_batch"].value if "invoice_batch" in form else ""
-            for line in re.split(r"[\r\n]+", batch_text):
-                line = line.strip()
-                if not line:
-                    continue
-                columns = [value.strip() for value in line.split("\t")]
-                if len(columns) < 2:
-                    match = re.fullmatch(r"(\S+)\s+([0-9,]+)\s*원?", line)
-                    columns = [match.group(1), match.group(2)] if match else []
-                if len(columns) < 2:
-                    raise ValueError("엑셀에서 계산서 번호와 발행 금액 두 열을 함께 복사해 붙여넣어 주세요.")
-                numbers.append(columns[0])
-                amount_texts.append(columns[1])
-        else:
-            numbers = [form["invoice_number"].value.strip() if "invoice_number" in form else ""]
-            amount_texts = [form["invoice_amount"].value.strip() if "invoice_amount" in form else ""]
-        if not numbers or len(numbers) != len(amount_texts):
-            raise ValueError("계산서 번호와 발행 금액을 같은 개수로 줄마다 입력해 주세요.")
-        existing_numbers = {str(item.get("number", "")) for item in invoices if isinstance(item, dict)}
-        if len(set(numbers)) != len(numbers) or any(number in existing_numbers for number in numbers):
-            raise ValueError("중복된 계산서 번호가 있습니다.")
-        for number, amount_text in zip(numbers, amount_texts):
-            amount = parse_int(amount_text)
-            if not number or amount <= 0:
-                raise ValueError("계산서 번호와 발행 금액을 모두 입력해 주세요.")
-            invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
-            history.append({"at": now, "user": username, "action": "계산서 추가", "reason": number, "changes": [{"field": "발행 금액", "before": 0, "after": amount}]})
-    elif action == "update_invoice":
-        invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
-        target = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
-        if target is None:
-            raise ValueError("수정할 계산서를 찾지 못했습니다.")
+    if action == "add_invoice":
         number = form["invoice_number"].value.strip() if "invoice_number" in form else ""
         amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
         if not number or amount <= 0:
             raise ValueError("계산서 번호와 발행 금액을 입력해 주세요.")
-        if any(item is not target and str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)):
+        if any(str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)):
             raise ValueError("이미 등록된 계산서 번호입니다.")
-        before_number, before_amount = str(target.get("number", "")), parse_int(target.get("amount", 0))
-        target.update({"number": number, "amount": amount, "user": username, "at": now})
-        history.append({"at": now, "user": username, "action": "계산서 수정", "reason": number, "changes": [{"field": "계산서 번호", "before": before_number, "after": number}, {"field": "발행 금액", "before": before_amount, "after": amount}]})
+        invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
+        history.append({"at": now, "user": username, "action": "계산서 추가", "reason": number, "changes": [{"field": "발행 금액", "before": 0, "after": amount}]})
     elif action == "delete_invoice":
         invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
         removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
@@ -5506,6 +5572,9 @@ class BonnieHandler(BaseHTTPRequestHandler):
             month_action = query.get("month_action", [""])[-1].strip()
             if month_action:
                 page_message = build_message("ok", month_action)
+            po_recheck_message = query.get("po_recheck", [""])[-1].strip()
+            if po_recheck_message:
+                page_message = build_message("ok", po_recheck_message)
             deleted_po = query.get("deleted_po", [""])[-1]
             deleted_count = parse_int(query.get("deleted_count", ["0"])[-1])
             if re.fullmatch(r"\d{6,}", deleted_po) and deleted_count > 0:
@@ -5742,6 +5811,18 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 if self.require_permission("sales") is None:
                     return
                 self.handle_sales_month_close_request()
+                return
+            if path == "/sales/po-recheck":
+                if self.require_permission("sales") is None:
+                    return
+                form = self.read_urlencoded_form()
+                try:
+                    user = self.current_user() or {}
+                    message = update_sales_po_recheck(form, str(user.get("username", "알 수 없음")))
+                    month = form.get("po_choice", "").split("|", 1)[0][:7] or form.get("month", "").strip()
+                    self.send_redirect(self.sales_folders_location(month) + ("&" if month else "?") + "po_recheck=" + quote(message))
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_sales_page(build_message("err", f"PO 금액 재확인 저장 중 오류가 났습니다: {exc}"), folder_mode=True)), status=400)
                 return
             if path == "/sales/delete":
                 if self.require_permission("sales") is None:
