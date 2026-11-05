@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +55,23 @@ CONTRACT_NAMES_PATH = DATA_DIR / "쿠팡계약_이름수정.json"
 CONTRACT_FILES_DIR = DATA_DIR / "쿠팡계약_원본"
 CONTRACT_FILES_META_PATH = DATA_DIR / "쿠팡계약_파일목록.json"
 _MASTER_SIMPLEWORKS_CACHE: dict[str, object] = {"key": None, "value": None}
+_SALES_SUMMARY_CACHE: dict[tuple[object, ...], tuple[list[tuple[str, int, int, int]], list[list[object]]]] = {}
+
+
+def sales_perf(label: str, started: float) -> None:
+    print(f"[sales-perf] {label}: {time.perf_counter() - started:.3f}s", flush=True)
+
+
+def backup_sales_paths_async(paths: list[tuple[str, Path]]) -> None:
+    unique = list(dict.fromkeys(paths))
+
+    def worker() -> None:
+        started = time.perf_counter()
+        for file_key, source_path in unique:
+            backup_file_to_supabase(file_key, source_path)
+        sales_perf("Supabase background backup", started)
+
+    threading.Thread(target=worker, name="sales-backup", daemon=True).start()
 
 
 def load_env_file(path: Path) -> None:
@@ -1787,7 +1806,16 @@ SALES_PAGE = """<!DOCTYPE html>
           return false;
         }
         alert("수량·메모 수정 " + result.changed + "건을 저장했습니다.");
-        window.location.href = result.location || window.location.href;
+        form.querySelectorAll('.detail-row[data-view-mode="po"]').forEach(function(row) {
+          var qty = row.querySelector('.qty-input');
+          var memo = row.querySelector('.memo-input');
+          if (qty) row.dataset.savedQty = qty.value;
+          if (memo) row.dataset.savedMemo = memo.value.trim();
+        });
+        if (typeof recalcSalesScreen === "function") recalcSalesScreen();
+        applyLookups();
+        if (button) { button.disabled = false; button.textContent = "수량/메모/단가 저장"; }
+        return false;
       } catch (error) {
         alert("저장 오류: " + error.message);
         if (button) { button.disabled = false; button.textContent = "수량/메모/단가 저장"; }
@@ -1896,22 +1924,21 @@ SALES_PAGE = """<!DOCTYPE html>
       if (requestedYear && sorted.includes(requestedYear)) select.value = requestedYear;
       else if (sorted.length) select.value = sorted[0];
       if (requestedMonth && requestedMonth.startsWith(select.value + "-")) select.dataset.selectedMonth = requestedMonth;
-      function syncFolderMonthUrl() {
+      function syncFolderMonthUrl(reloadPage) {
         var month = select.dataset.selectedMonth || "";
         var url = new URL(window.location.href);
         if (month) url.searchParams.set("month", month);
         else url.searchParams.delete("month");
-        window.history.replaceState(null, "", url.pathname + url.search);
+        if (reloadPage) window.location.href = url.pathname + url.search;
+        else window.history.replaceState(null, "", url.pathname + url.search);
       }
       select.addEventListener("change", function() {
         renderFolderMonthTabs(true);
-        syncFolderMonthUrl();
-        applyFolderYearFilter();
+        syncFolderMonthUrl(true);
       });
       document.getElementById("folder-month-select")?.addEventListener("change", function() {
         select.dataset.selectedMonth = this.value;
-        syncFolderMonthUrl();
-        applyFolderYearFilter();
+        syncFolderMonthUrl(true);
       });
       renderFolderMonthTabs(false);
       syncFolderMonthUrl();
@@ -3302,7 +3329,7 @@ def find_uploaded_sales_po_files() -> list[Path]:
 
 def ensure_monthly_sales_book():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    restore_sales_files_from_supabase(force=True)
+    restore_sales_files_from_supabase(force=False)
     headers = ["일자", "월", "입고예정일", "SKU ID", "상품명", "납품수량", "금액", "바코드", "비고", "수정수량", "수정메모", "PO번호", "원본발주금액"]
     if SALES_LEDGER_PATH.exists():
         wb = load_workbook(SALES_LEDGER_PATH)
@@ -3443,6 +3470,7 @@ def rebuild_monthly_sales_from_uploaded_pos() -> tuple[int, int, int]:
     return len(latest_by_po), saved_count, total_amount
 
 def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: bool = False, use_close_cache: bool = True) -> tuple[list[tuple[str, int, int, int]], list[list[object]]]:
+    started = time.perf_counter()
     restore_sales_files_from_supabase()
     if not SALES_LEDGER_PATH.exists():
         return [], []
@@ -3450,6 +3478,20 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
     if not isinstance(close_months, dict):
         close_months = {}
     closed_months = {month for month, record in close_months.items() if isinstance(record, dict) and record.get("closed")}
+    tracked_paths = [SALES_LEDGER_PATH, SALES_MONTH_CLOSE_PATH, SALES_PRICE_EDITS_PATH, SALES_ADJUSTMENTS_PATH, PRICE_HISTORY_PATH]
+    master_path = get_saved_master_path()
+    if master_path is not None:
+        tracked_paths.append(master_path)
+    cache_key = (
+        aggregate_by_sku,
+        use_close_cache,
+        tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in tracked_paths if path.exists()),
+    )
+    cached = _SALES_SUMMARY_CACHE.get(cache_key)
+    if cached is not None:
+        summary_rows, rows = cached
+        sales_perf("monthly summary cache hit", started)
+        return (summary_rows, rows) if limit_rows is None else (summary_rows, rows[-limit_rows:])
     master_amounts = get_master_amounts_by_sku()
     price_history = load_price_history()
     price_edits = load_sales_price_edits()
@@ -3578,9 +3620,38 @@ def load_monthly_sales_summary(limit_rows: int | None = 300, aggregate_by_sku: b
             rows.extend(record.get(detail_key, []))
         summary_rows.sort(key=lambda item: str(item[0]))
         rows.sort(key=lambda item: (str(item[1]), str(item[2])))
+    if len(_SALES_SUMMARY_CACHE) > 8:
+        _SALES_SUMMARY_CACHE.clear()
+    _SALES_SUMMARY_CACHE[cache_key] = (summary_rows, rows)
+    sales_perf("monthly summary calculate", started)
     if limit_rows is None:
         return summary_rows, rows
     return summary_rows, rows[-limit_rows:]
+
+
+def aggregate_sales_detail_rows(rows: list[list[object]]) -> list[list[object]]:
+    grouped_rows: dict[tuple[object, object], dict[str, object]] = {}
+    for row_no, day, sku, name, original_qty, qty, unit_price, amount, remarks, memo, manual_changed, amount_mismatch in rows:
+        key = (day, sku)
+        item = grouped_rows.setdefault(key, {
+            "row_no": row_no, "day": day, "sku": sku, "name": name,
+            "original_qty": 0, "qty": 0, "unit_price": unit_price, "amount": 0,
+            "remarks": set(), "memo": [], "manual_changed": False, "amount_mismatch": False,
+        })
+        item["original_qty"] = int(item["original_qty"]) + int(original_qty)
+        item["qty"] = int(item["qty"]) + int(qty)
+        item["amount"] = int(item["amount"]) + int(amount)
+        item["manual_changed"] = bool(item["manual_changed"] or manual_changed)
+        item["amount_mismatch"] = bool(item["amount_mismatch"] or amount_mismatch)
+        for po_no in split_po_numbers(remarks):
+            item["remarks"].add(po_no)
+        if memo:
+            item["memo"].append(str(memo))
+    return [[
+        item["row_no"], item["day"], item["sku"], item["name"], item["original_qty"], item["qty"],
+        item["unit_price"], item["amount"], ", ".join(sorted(item["remarks"])), " / ".join(item["memo"]),
+        item["manual_changed"], item["amount_mismatch"],
+    ] for item in grouped_rows.values()]
 
 
 def set_sales_month_closed(month: str, closed: bool, username: str) -> str:
@@ -3592,8 +3663,8 @@ def set_sales_month_closed(month: str, closed: bool, username: str) -> str:
         months = {}
         data["months"] = months
     if closed:
-        summary_rows, detail_sku = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True, use_close_cache=False)
-        _summary_rows, detail_po = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False, use_close_cache=False)
+        summary_rows, detail_po = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False, use_close_cache=False)
+        detail_sku = aggregate_sales_detail_rows(detail_po)
         month_summary = [row for row in summary_rows if str(row[0])[:7] == month]
         month_sku = [row for row in detail_sku if str(row[1])[:7] == month]
         month_po = [row for row in detail_po if str(row[1])[:7] == month]
@@ -4234,7 +4305,8 @@ def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
     )
 
 
-def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
+def render_sales_page(message: str = "", folder_mode: bool = False, selected_month: str = "") -> str:
+    render_started = time.perf_counter()
     restore_sales_files_from_supabase(force=False)
     close_data = load_sales_month_close()
     close_months = close_data.get("months", {}) if isinstance(close_data, dict) else {}
@@ -4242,15 +4314,22 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         close_months = {}
     po_uploads = load_sales_po_uploads()
     if folder_mode:
-        summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
-        _po_summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
+        summary_rows, po_detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=False)
+        detail_rows = aggregate_sales_detail_rows(po_detail_rows)
     else:
         summary_rows, detail_rows = load_monthly_sales_summary(limit_rows=None, aggregate_by_sku=True)
         po_detail_rows = []
     current_month = datetime.now().strftime("%Y-%m")
     summary_default_month = current_month
-    visible_detail_rows = detail_rows
-    visible_po_detail_rows = po_detail_rows if folder_mode else []
+    available_months = sorted({str(row[0])[:7] for row in summary_rows if str(row[0])[:7]})
+    if folder_mode:
+        requested_month = selected_month if selected_month in available_months else (available_months[-1] if available_months else current_month)
+        visible_detail_rows = [row for row in detail_rows if str(row[1])[:7] == requested_month]
+        visible_po_detail_rows = [row for row in po_detail_rows if str(row[1])[:7] == requested_month]
+        summary_default_month = requested_month
+    else:
+        visible_detail_rows = detail_rows
+        visible_po_detail_rows = []
     po_recheck_panel = render_po_recheck_panel(visible_po_detail_rows) if folder_mode else ""
     sales_price_edits = load_sales_price_edits()
     if summary_rows:
@@ -4390,7 +4469,7 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         else "업로드, 연도총매출, 일자별 합계, 해당월 납품 상품을 확인합니다."
     )
     detail_title = "월별 납품 상품 폴더" if folder_mode else f"{current_month} 납품 상품 내역"
-    return (
+    page = (
         SALES_PAGE
         .replace("{message}", message)
         .replace("{year_rows}", year_rows)
@@ -4410,6 +4489,8 @@ def render_sales_page(message: str = "", folder_mode: bool = False) -> str:
         .replace("{upload_section_class}", "" if folder_mode else "not-shown")
         .replace("{summary_section_class}", "not-shown" if folder_mode else "")
     )
+    sales_perf("render monthly folders" if folder_mode else "render sales page", render_started)
+    return page
 
 
 def normalize_simple_no(value: object) -> str:
@@ -5042,6 +5123,7 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
 
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
+    save_started = time.perf_counter()
     def form_values(name: str) -> list[str]:
         if name not in form:
             return []
@@ -5068,6 +5150,7 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
     row_values = list(dict.fromkeys(parse_int(value) for value in form_values("row")))
 
     changed = 0
+    ledger_changed = False
     override_reason = form_value("override_reason")
     confirmation_data = load_sales_confirmations()
     confirmation_days = confirmation_data.setdefault("days", {})
@@ -5097,18 +5180,24 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             row_changes.append({"field": f"{ws.cell(row, 4).value} 수량", "before": parse_int(old_adjusted, original_qty), "after": new_qty})
             ws.cell(row, 10).value = adjusted_value
             changed += 1
+            ledger_changed = True
         if new_memo != old_memo:
             row_changes.append({"field": f"{ws.cell(row, 4).value} 메모", "before": old_memo, "after": new_memo})
             ws.cell(row, 11).value = new_memo
             changed += 1
+            ledger_changed = True
         adjustment_record = {
             "qty": new_qty,
             "memo": new_memo,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "updated_by": username,
         }
-        if not isinstance(previous_adjustment, dict) or parse_int(previous_adjustment.get("qty"), original_qty) != new_qty or str(previous_adjustment.get("memo") or "").strip() != new_memo:
+        should_store_adjustment = new_qty != original_qty or bool(new_memo)
+        if should_store_adjustment and (not isinstance(previous_adjustment, dict) or parse_int(previous_adjustment.get("qty"), original_qty) != new_qty or str(previous_adjustment.get("memo") or "").strip() != new_memo):
             saved_adjustments[adjustment_key] = adjustment_record
+            adjustments_changed = True
+        elif not should_store_adjustment and adjustment_key in saved_adjustments:
+            saved_adjustments.pop(adjustment_key, None)
             adjustments_changed = True
         edit_key = sales_price_edit_key(day, po_no, sku)
         edit_record = price_edits.get(edit_key, {})
@@ -5157,15 +5246,23 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
             "reason": override_reason,
             "changes": changes,
         })
-    wb.save(SALES_LEDGER_PATH)
+    backup_paths: list[tuple[str, Path]] = []
+    if ledger_changed:
+        wb.save(SALES_LEDGER_PATH)
+        backup_paths.append(("sales_ledger", SALES_LEDGER_PATH))
     if adjustments_changed:
-        save_sales_adjustments(saved_adjustments)
+        SALES_ADJUSTMENTS_PATH.write_text(json.dumps(saved_adjustments, ensure_ascii=False, indent=2), encoding="utf-8")
+        backup_paths.append(("sales_adjustments", SALES_ADJUSTMENTS_PATH))
     if price_edits_changed:
-        save_sales_price_edits(price_edits)
+        SALES_PRICE_EDITS_PATH.write_text(json.dumps(price_edits, ensure_ascii=False, indent=2), encoding="utf-8")
+        backup_paths.append(("sales_price_edits", SALES_PRICE_EDITS_PATH))
     if audit_by_day:
-        save_sales_confirmations(confirmation_data)
-    write_sales_display_workbook()
-    backup_sales_files_to_supabase()
+        SALES_CONFIRM_PATH.write_text(json.dumps(confirmation_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        backup_paths.append(("sales_confirmations", SALES_CONFIRM_PATH))
+    if backup_paths:
+        _SALES_SUMMARY_CACHE.clear()
+        backup_sales_paths_async(backup_paths)
+    sales_perf("save quantity/memo/price response", save_started)
     return changed
 
 
@@ -5589,6 +5686,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             if self.require_permission("sales") is None:
                 return
             query = parse_qs(parsed.query)
+            selected_month = query.get("month", [""])[-1].strip()
             saved_count = parse_int(query.get("saved", ["0"])[-1])
             page_message = build_message(
                 "ok",
@@ -5604,7 +5702,7 @@ class BonnieHandler(BaseHTTPRequestHandler):
             deleted_count = parse_int(query.get("deleted_count", ["0"])[-1])
             if re.fullmatch(r"\d{6,}", deleted_po) and deleted_count > 0:
                 page_message = build_message("ok", f"PO {deleted_po} 상품 {deleted_count}줄을 삭제하고 합계금액을 다시 계산했습니다.")
-            page = self.decorate_page(render_sales_page(page_message, folder_mode=True))
+            page = self.decorate_page(render_sales_page(page_message, folder_mode=True, selected_month=selected_month))
             new_skus = [value.strip() for value in parse_qs(parsed.query).get("new_skus", [""])[-1].split(",") if value.strip()]
             if new_skus:
                 master_path = get_saved_master_path()
