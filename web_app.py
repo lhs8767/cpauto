@@ -5042,22 +5042,37 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
 
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
+    def form_values(name: str) -> list[str]:
+        if name not in form:
+            return []
+        raw = form[name]
+        pending = list(raw) if isinstance(raw, list) else [raw]
+        values: list[str] = []
+        while pending:
+            item = pending.pop(0)
+            if isinstance(item, list):
+                pending[:0] = item
+                continue
+            values.append(str(getattr(item, "value", item) or ""))
+        return values
+
+    def form_value(name: str, default: str = "") -> str:
+        values = form_values(name)
+        return values[-1].strip() if values else default
+
     wb, ws = ensure_monthly_sales_book()
     price_edits = load_sales_price_edits()
     saved_adjustments = load_sales_adjustments()
     price_edits_changed = False
     adjustments_changed = False
-    row_values = form["row"] if "row" in form else []
-    if not isinstance(row_values, list):
-        row_values = [row_values]
+    row_values = list(dict.fromkeys(parse_int(value) for value in form_values("row")))
 
     changed = 0
-    override_reason = form["override_reason"].value.strip() if "override_reason" in form else ""
+    override_reason = form_value("override_reason")
     confirmation_data = load_sales_confirmations()
     confirmation_days = confirmation_data.setdefault("days", {})
     audit_by_day: dict[str, list[dict[str, object]]] = defaultdict(list)
-    for item in row_values:
-        row = parse_int(item.value)
+    for row in row_values:
         if row < 2 or row > ws.max_row:
             continue
         qty_key = f"qty_{row}"
@@ -5065,8 +5080,8 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         price_key = f"price_{row}"
         price_approved_key = f"price_approved_{row}"
         original_qty = parse_int(ws.cell(row, 6).value)
-        new_qty_text = form[qty_key].value.strip() if qty_key in form else str(original_qty)
-        new_memo = form[memo_key].value.strip() if memo_key in form else ""
+        new_qty_text = form_value(qty_key, str(original_qty))
+        new_memo = form_value(memo_key)
         new_qty = parse_int(new_qty_text, original_qty)
         adjusted_value = "" if new_qty == original_qty else new_qty
         old_adjusted_value = ws.cell(row, 10).value
@@ -5100,9 +5115,9 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         original_amount = parse_int(ws.cell(row, 7).value)
         original_price = round(original_amount / original_qty) if original_qty and original_amount else 0
         current_price = parse_int(edit_record.get("current_price"), original_price) if isinstance(edit_record, dict) else original_price
-        price_approved = form[price_approved_key].value.strip() == "1" if price_approved_key in form else False
+        price_approved = form_value(price_approved_key) == "1"
         if price_approved:
-            new_price = parse_int(form[price_key].value if price_key in form else current_price)
+            new_price = parse_int(form_value(price_key, str(current_price)))
             if new_price <= 0:
                 raise ValueError(f"{sku}의 수정 단가는 0원보다 커야 합니다.")
             if new_price != current_price:
