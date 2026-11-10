@@ -4295,15 +4295,15 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     form_id = f'invoice-{re.sub(r"\D", "", day)}'
     invoice_lines = "".join(
         f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
-        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 계산서를 삭제할까요?\')">'
+        f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 발주서를 삭제할까요?\')">'
         f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
         f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
         for item in invoices if isinstance(item, dict)
     )
-    details = f'<details class="summary-invoice-detail"><summary>등록 계산서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
+    details = f'<details class="summary-invoice-detail"><summary>등록 발주서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="계산서 번호" required></td>'
-        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="numeric" placeholder="발행 금액" required></td>'
+        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="발주서 번호: 1234;3456;7890" title="여러 번호는 세미콜론(;) 또는 콤마로 구분" required></td>'
+        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="text" placeholder="금액: 10,000;4,017,310;44,191,000" title="발주서 순서와 같게 세미콜론(;)으로 구분" required></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
         f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
         f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">추가</button></div>{details}</td>'
@@ -4439,9 +4439,9 @@ def render_sales_page(message: str = "", folder_mode: bool = False, selected_mon
                 f'<button class="summary-month-toggle" type="button" onclick="toggleSummaryMonth(this)">{toggle_label}</button>{close_button}</div>'
                 f'<div class="summary-month-body"><div class="scroll" style="max-height:620px;"><table class="summary-table resizable-table" style="min-width:1500px;">'
                 f'<colgroup><col style="width:9%;"><col style="width:5%;"><col style="width:7%;"><col style="width:13%;"><col style="width:11%;"><col style="width:10%;"><col style="width:14%;"><col style="width:14%;"><col style="width:17%;"></colgroup>'
-                f'<thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>계산서 번호</th><th>발행 금액</th><th>잔액 / 상태 / 관리</th></tr></thead>'
+                f'<thead><tr><th>일자</th><th>PO 수</th><th>납품수량</th><th>납품상품 합계금액</th><th>VAT 별도</th><th>광고비예산</th><th>발주서 번호</th><th>계산서 발행금액</th><th>잔액 / 상태 / 관리</th></tr></thead>'
                 f'<tbody>{row_html}'
-                f'<tr class="summary-month-total"><td>월 합계</td><td class="summary-month-po">{month_po_count:,}</td><td class="summary-month-qty">{month_qty:,}</td><td class="summary-month-amount">{month_amount:,}원</td><td class="summary-month-vat">{month_vat:,}원</td><td class="summary-month-budget">{month_budget:,}원</td><td>계산서 합계</td><td class="summary-month-invoice">{month_invoice_total:,}원</td><td class="summary-month-remaining">차액 {month_remaining:+,}원</td></tr>'
+                f'<tr class="summary-month-total"><td>월 합계</td><td class="summary-month-po">{month_po_count:,}</td><td class="summary-month-qty">{month_qty:,}</td><td class="summary-month-amount">{month_amount:,}원</td><td class="summary-month-vat">{month_vat:,}원</td><td class="summary-month-budget">{month_budget:,}원</td><td>발주서 합계</td><td class="summary-month-invoice">{month_invoice_total:,}원</td><td class="summary-month-remaining">차액 {month_remaining:+,}원</td></tr>'
                 f'</tbody></table></div></div></section>'
             )
         summary_html = "\n".join(summary_parts)
@@ -5155,28 +5155,40 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
     history = record.setdefault("history", [])
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if action == "add_invoice":
-        number = form["invoice_number"].value.strip() if "invoice_number" in form else ""
-        amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
-        if not number or amount <= 0:
-            raise ValueError("계산서 번호와 발행 금액을 입력해 주세요.")
-        if any(str(item.get("number", "")) == number for item in invoices if isinstance(item, dict)):
-            raise ValueError("이미 등록된 계산서 번호입니다.")
-        invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
-        history.append({"at": now, "user": username, "action": "계산서 추가", "reason": number, "changes": [{"field": "발행 금액", "before": 0, "after": amount}]})
+        raw_numbers = form["invoice_number"].value.strip() if "invoice_number" in form else ""
+        raw_amounts = form["invoice_amount"].value.strip() if "invoice_amount" in form else ""
+        numbers = [value.strip() for value in re.split(r"[;,\r\n]+", raw_numbers) if value.strip() and value.strip() != "~"]
+        amount_texts = [value.strip() for value in re.split(r"[;\r\n]+", raw_amounts) if value.strip() and value.strip() != "~"]
+        if not numbers or not amount_texts:
+            raise ValueError("발주서 번호와 계산서 발행금액을 입력해 주세요.")
+        if len(numbers) != len(amount_texts):
+            raise ValueError(f"발주서 번호는 {len(numbers)}개, 발행금액은 {len(amount_texts)}개입니다. 같은 개수로 입력해 주세요.")
+        if len(set(numbers)) != len(numbers):
+            raise ValueError("같은 발주서 번호가 중복 입력되어 있습니다.")
+        existing_numbers = {str(item.get("number", "")).strip() for item in invoices if isinstance(item, dict)}
+        duplicated = [number for number in numbers if number in existing_numbers]
+        if duplicated:
+            raise ValueError(f"이미 등록된 발주서 번호입니다: {', '.join(duplicated)}")
+        amounts = [parse_int(value) for value in amount_texts]
+        if any(amount <= 0 for amount in amounts):
+            raise ValueError("계산서 발행금액은 0원보다 크게 입력해 주세요.")
+        for number, amount in zip(numbers, amounts):
+            invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
+            history.append({"at": now, "user": username, "action": "발주서 추가", "reason": number, "changes": [{"field": "계산서 발행금액", "before": 0, "after": amount}]})
     elif action == "delete_invoice":
         invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
         removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
         if removed is None:
-            raise ValueError("삭제할 계산서를 찾지 못했습니다.")
+            raise ValueError("삭제할 발주서를 찾지 못했습니다.")
         invoices.remove(removed)
-        history.append({"at": now, "user": username, "action": "계산서 삭제", "reason": str(removed.get("number", "")), "changes": []})
+        history.append({"at": now, "user": username, "action": "발주서 삭제", "reason": str(removed.get("number", "")), "changes": []})
     total = sum(parse_int(item.get("amount", 0)) for item in invoices if isinstance(item, dict))
     matched = total == sales_amount and sales_amount > 0
     record.update({"sales_amount": sales_amount, "confirmed": matched})
     if matched:
         record.update({"confirmed_by": username, "confirmed_at": now, "confirmed_invoice_amount": total, "confirmed_sales_amount": sales_amount})
     save_sales_confirmations(data)
-    return f"{day} 계산서 정보를 저장했습니다. 현재 미발행 잔액은 {sales_amount - total:,}원입니다."
+    return f"{day} 발주서 정보를 저장했습니다. 현재 미발행 잔액은 {sales_amount - total:,}원입니다."
 
 
 def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
