@@ -5510,6 +5510,9 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     for r in visible_rows:
         title = saved_names.get(r["id"], "").strip() or r["title"]
         sv=saved.get(r["id"],"").strip(); amount=contract_amount_without_vat(sv or r["amount"]); waiting="확인 필요" in amount
+        period_missing = bool(r.get("file_id") and (not r.get("start_date") or not r.get("end_date")))
+        details_open = " open" if period_missing else ""
+        more_label = "기간 입력" if period_missing else "자세히"
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
         if r.get("file_id"):
             raw_amount = re.sub(r"[^0-9]", "", sv or str(r["amount"]))
@@ -5529,7 +5532,7 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             amount_editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
             name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
             editor = name_editor + amount_editor
-        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{editor}</section></details>')
+        out.append(f'<details class="row"{details_open}><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>{more_label}</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{editor}</section></details>')
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
     confirmed_total = contract_amount_total(visible_rows, saved)
