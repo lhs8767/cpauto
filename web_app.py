@@ -4302,8 +4302,8 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     )
     details = f'<details class="summary-invoice-detail"><summary>등록 발주서 {len(invoices)}건 보기</summary>{invoice_lines}</details>' if invoices else ""
     cells = (
-        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" placeholder="발주서 번호: 1234;3456;7890" title="여러 번호는 세미콜론(;) 또는 콤마로 구분" required></td>'
-        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="text" placeholder="금액: 10,000;4,017,310;44,191,000" title="발주서 순서와 같게 세미콜론(;)으로 구분" required></td>'
+        f'<td><input class="summary-invoice-input summary-invoice-number" name="invoice_number" form="{form_id}" title="여러 번호는 세미콜론(;) 또는 콤마로 구분" required></td>'
+        f'<td><input class="summary-invoice-input" name="invoice_amount" form="{form_id}" inputmode="text" title="발주서 순서와 같게 세미콜론(;)으로 구분" required></td>'
         f'<td><form id="{form_id}" method="post" action="/sales/confirm"><input type="hidden" name="day" value="{html.escape(day, quote=True)}">'
         f'<input type="hidden" name="sales_amount" value="{sales_amount}"><input type="hidden" name="action" value="add_invoice"></form>'
         f'<div class="summary-invoice-actions"><span class="status-badge {css}">{label}</span><button class="confirm-action" type="submit" form="{form_id}">추가</button></div>{details}</td>'
