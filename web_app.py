@@ -407,6 +407,48 @@ def save_contract_name(contract_id: str, name: str) -> None:
     backup_file_to_supabase("contract_names", CONTRACT_NAMES_PATH)
 
 
+def save_contract_details(contract_id: str, name: str, start_date: str, end_date: str, amount: str) -> str:
+    if not contract_id.startswith("upload_"):
+        raise ValueError("수정할 업로드 계약을 찾지 못했습니다.")
+    file_id = contract_id.removeprefix("upload_").strip()
+    items = load_contract_files_meta()
+    item = next((value for value in items if str(value.get("id", "")) == file_id), None)
+    if item is None:
+        raise ValueError("수정할 업로드 계약을 찾지 못했습니다.")
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        raise ValueError("행사·계약명을 입력해주세요.")
+    try:
+        start = datetime.strptime(start_date.strip(), "%Y-%m-%d")
+        end = datetime.strptime(end_date.strip(), "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("시작일과 종료일을 올바르게 입력해주세요.") from exc
+    if start > end:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+    cleaned_amount = re.sub(r"[^0-9]", "", amount)
+    if not cleaned_amount:
+        raise ValueError("확인한 금액을 입력해주세요.")
+    item.update({
+        "extracted_title": cleaned_name,
+        "extracted_start": start.strftime("%Y-%m-%d"),
+        "extracted_end": end.strftime("%Y-%m-%d"),
+        "extracted_amount": f"{int(cleaned_amount):,}원",
+        "extraction_status": "수기 수정",
+        "extraction_version": "3",
+        "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+    save_contract_files_meta(items)
+    names = load_contract_names()
+    names[contract_id] = cleaned_name
+    CONTRACT_NAMES_PATH.write_text(json.dumps(names, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_names", CONTRACT_NAMES_PATH)
+    amounts = load_contract_manual_amounts()
+    amounts[contract_id] = str(int(cleaned_amount))
+    CONTRACT_MANUAL_PATH.write_text(json.dumps(amounts, ensure_ascii=False, indent=2), encoding="utf-8")
+    backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+    return str(item.get("month", ""))
+
+
 def load_contract_files_meta() -> list[dict[str, str]]:
     restore_file_from_supabase("contract_files_metadata", CONTRACT_FILES_META_PATH)
     if not CONTRACT_FILES_META_PATH.exists():
@@ -425,7 +467,7 @@ def save_contract_files_meta(items: list[dict[str, str]]) -> None:
 
 
 def extract_contract_details(path: Path, month: str) -> dict[str, str]:
-    result = {"extraction_status": "수기 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "extraction_version": "2"}
+    result = {"extraction_status": "수기 확인 필요", "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"), "extraction_version": "3"}
     if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
         return result
     tesseract_path = get_tesseract_path()
@@ -436,16 +478,25 @@ def extract_contract_details(path: Path, month: str) -> dict[str, str]:
         sparse_text = run_tesseract_text(tesseract_path, path, "11")
         merged = text + "\n" + sparse_text
         compact = re.sub(r"[ \t]+", " ", merged)
+        date_text = compact.translate(str.maketrans({"–": "-", "—": "-", "−": "-", "∼": "~", "～": "~"}))
+        date_text = re.sub(r"(?<=\d)\s+(?=\d)", "", date_text)
         date_pattern = r"(20\d{2})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})"
-        period_area = compact
-        period_marker = re.search(r"광고\s*기간", compact)
+        period_area = date_text
+        period_marker = re.search(r"광고\s*기간", date_text)
         if period_marker:
-            period_area = compact[period_marker.start():period_marker.start() + 220]
+            period_area = date_text[period_marker.start():period_marker.start() + 260]
         dates = re.findall(date_pattern, period_area)
+        if len(dates) < 2:
+            dates = re.findall(date_pattern, date_text)
         if len(dates) >= 2:
-            normalized_dates = [f"{year}-{int(month_value):02d}-{int(day):02d}" for year, month_value, day in dates[:2]]
-            result["extracted_start"] = normalized_dates[0]
-            result["extracted_end"] = normalized_dates[1]
+            normalized_dates = []
+            for year, month_value, day in dates:
+                try:
+                    normalized_dates.append(datetime(int(year), int(month_value), int(day)).strftime("%Y-%m-%d"))
+                except ValueError:
+                    continue
+            if len(normalized_dates) >= 2:
+                result["extracted_start"], result["extracted_end"] = normalized_dates[:2]
         if re.search(r"배너|지면\s*광고", compact):
             result["extracted_kind"] = "광고"
             result["extracted_title"] = f"{int(month[5:])}월 배너 광고" if re.fullmatch(r"20\d{2}-\d{2}", month) else "배너 광고"
@@ -463,8 +514,10 @@ def extract_contract_details(path: Path, month: str) -> dict[str, str]:
             summed_total = next((total for total in reversed(candidates) for base in candidates for vat in candidates if base < total and vat < total and base + vat == total), 0)
             if summed_total:
                 result["extracted_amount"] = f"{summed_total:,}원 (VAT 포함)"
-        if any(key in result for key in ("extracted_title", "extracted_start", "extracted_amount")):
+        if result.get("extracted_start") and result.get("extracted_end"):
             result["extraction_status"] = "자동 반영"
+        elif result.get("extracted_title") or result.get("extracted_amount"):
+            result["extraction_status"] = "기간 확인 필요"
     except Exception:
         pass
     return result
@@ -473,7 +526,7 @@ def extract_contract_details(path: Path, month: str) -> dict[str, str]:
 def refresh_contract_extractions(items: list[dict[str, str]]) -> list[dict[str, str]]:
     changed = False
     for item in items:
-        if str(item.get("extraction_version", "")) == "2":
+        if str(item.get("extraction_version", "")) == "3":
             continue
         stored_path = CONTRACT_FILES_DIR / Path(str(item.get("stored_name", ""))).name
         restore_file_from_supabase(str(item.get("file_key", "")), stored_path)
@@ -535,6 +588,10 @@ def delete_contract_upload(file_id: str) -> str:
     if amounts.pop(f"upload_{file_id}", None) is not None:
         CONTRACT_MANUAL_PATH.write_text(json.dumps(amounts, ensure_ascii=False, indent=2), encoding="utf-8")
         backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
+    names = load_contract_names()
+    if names.pop(f"upload_{file_id}", None) is not None:
+        CONTRACT_NAMES_PATH.write_text(json.dumps(names, ensure_ascii=False, indent=2), encoding="utf-8")
+        backup_file_to_supabase("contract_names", CONTRACT_NAMES_PATH)
     return str(item.get("name", "계약 파일"))
 
 
@@ -5436,6 +5493,7 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             period, exact = "기간 확인 필요", "파일에서 기간을 자동 인식하지 못했습니다. 이름과 금액은 직접 수정할 수 있습니다."
         uploaded_rows.append({
             "id": upload_id,
+            "file_id": str(item.get("id", "")),
             "kind": str(item.get("extracted_kind", "")).strip() or "계약",
             "title": str(item.get("extracted_title", "")).strip() or Path(str(item.get("name", "계약 파일"))).stem,
             "date": period,
@@ -5443,6 +5501,8 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             "amount": contract_amount_without_vat(str(item.get("extracted_amount", "")).strip()) or "금액 확인 필요",
             "easy": "업로드한 계약서에서 별도 계약으로 자동 등록했습니다.",
             "facts": [("원본 파일", str(item.get("name", ""))), ("처리 상태", str(item.get("extraction_status", "수기 확인 필요")))],
+            "start_date": start,
+            "end_date": end,
             "edit": True,
         })
     out=[]
@@ -5451,9 +5511,25 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         title = saved_names.get(r["id"], "").strip() or r["title"]
         sv=saved.get(r["id"],"").strip(); amount=contract_amount_without_vat(sv or r["amount"]); waiting="확인 필요" in amount
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
-        editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
-        name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
-        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{name_editor}{editor}</section></details>')
+        if r.get("file_id"):
+            raw_amount = re.sub(r"[^0-9]", "", sv or str(r["amount"]))
+            editor = (
+                f'<form class="contract-edit" method="post" action="/contracts/details/save">'
+                f'<input type="hidden" name="contract_id" value="{html.escape(r["id"], quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}">'
+                f'<label>행사·계약명<input name="name" value="{html.escape(title, quote=True)}" required></label>'
+                f'<label>시작일<input type="date" name="start_date" value="{html.escape(str(r.get("start_date", "")), quote=True)}" required></label>'
+                f'<label>종료일<input type="date" name="end_date" value="{html.escape(str(r.get("end_date", "")), quote=True)}" required></label>'
+                f'<label>금액(VAT 미포함)<input name="amount" inputmode="numeric" value="{html.escape(raw_amount, quote=True)}" required></label>'
+                f'<button type="submit">수정 저장</button></form>'
+                f'<form class="contract-delete" method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약과 원본 파일을 삭제할까요?\');">'
+                f'<input type="hidden" name="file_id" value="{html.escape(str(r["file_id"]), quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}">'
+                f'<button type="submit">계약 삭제</button></form>'
+            )
+        else:
+            amount_editor=(f'<form method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(sv)}" placeholder="확인한 금액 입력"><button>금액 저장</button></form>') if r["edit"] else ""
+            name_editor=f'<form method="post" action="/contracts/name/save"><input type="hidden" name="contract_id" value="{r["id"]}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="name" value="{html.escape(title, quote=True)}" placeholder="행사·계약명 입력"><button>이름 저장</button></form>'
+            editor = name_editor + amount_editor
+        out.append(f'<details class="row"><summary><b>{r["kind"]}</b><strong>{html.escape(title)}</strong><span>{r["date"]}</span><em>{html.escape(amount)}</em><i class="{"wait" if waiting else "done"}">{"입력 필요" if waiting else "확인 완료"}</i><u>자세히</u></summary><section><p><strong>쉽게 말하면:</strong> {r["easy"]}</p><small>{r["exact"]}</small><div class="facts">{facts}</div>{editor}</section></details>')
     month_options = "".join(f'<option value="{html.escape(month, quote=True)}"{" selected" if month == selected_month else ""}>{html.escape(month[:4])}년 {int(month[5:]):02d}월</option>' for month in available_months)
     contract_rows = "".join(out) or '<div style="background:white;border:1px solid #d7e1ee;border-radius:8px;padding:22px;text-align:center;color:#667085">선택한 월에 정리된 계약이 없습니다.</div>'
     confirmed_total = contract_amount_total(visible_rows, saved)
@@ -5466,6 +5542,8 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     .month-filter{display:flex;align-items:center;gap:10px;width:max-content;margin:16px 0;padding:8px 10px;background:#fff;border:1px solid #d7e1ee;border-radius:9px;box-shadow:0 2px 8px rgba(16,47,75,.05)}
     .month-filter label{font-size:12px;font-weight:800;color:#52687d}.month-filter select{appearance:none;min-width:132px;padding:8px 34px 8px 11px;border:1px solid #b9c9da;border-radius:7px;background:#f8fbfe;color:#173f68;font-size:13px;font-weight:800}
     .month-title{margin:20px 0 10px;font-size:25px;letter-spacing:-.5px;color:#102f4b}.row summary{padding:9px 12px;font-size:12px}.row summary>strong{font-size:13px}.row summary>span,.row summary>em{font-size:12px}.row{margin-bottom:6px}.head{font-size:10px;padding:5px 12px}
+    .row section .contract-edit{display:grid;grid-template-columns:minmax(240px,2fr) repeat(3,minmax(145px,1fr)) auto;align-items:end;gap:8px}.contract-edit label{font-size:11px;font-weight:800;color:#52687d}.contract-edit input{display:block;width:100%;margin-top:4px}.row section .contract-delete{justify-content:flex-end;margin-top:7px}.contract-delete button{background:#b42318}
+    @media(max-width:1000px){.row section .contract-edit{grid-template-columns:1fr 1fr}.contract-edit button{grid-column:1/-1}}
     '''
     page = page.replace("</style>", compact_css + "</style>", 1)
     page = page.replace('<div class="ul"></div>', '')
@@ -5827,6 +5905,21 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self.send_html(self.decorate_page(render_contracts_compact_page("2026-10") + build_message("err", f"이름 저장 중 오류가 났습니다: {exc}")), status=400)
                 return
+            if path == "/contracts/details/save":
+                if self.require_user() is None:
+                    return
+                form = self.read_urlencoded_form()
+                month = form.get("month", "").strip()
+                try:
+                    saved_month = save_contract_details(
+                        form.get("contract_id", ""), form.get("name", ""),
+                        form.get("start_date", ""), form.get("end_date", ""), form.get("amount", ""),
+                    )
+                    target_month = saved_month or month
+                    self.send_redirect(f"/contracts?month={quote(target_month)}" if target_month else "/contracts")
+                except Exception as exc:
+                    self.send_html(self.decorate_page(render_contracts_compact_page(month) + build_message("err", f"계약 수정 중 오류가 났습니다: {exc}")), status=400)
+                return
             if path == "/contracts/total/save":
                 if self.require_user() is None:
                     return
@@ -5842,11 +5935,12 @@ class BonnieHandler(BaseHTTPRequestHandler):
                 if self.require_user() is None:
                     return
                 form = self.read_urlencoded_form()
+                month = form.get("month", "").strip()
                 try:
                     delete_contract_upload(form.get("file_id", "").strip())
-                    self.send_redirect("/contracts")
+                    self.send_redirect(f"/contracts?month={quote(month)}" if month else "/contracts")
                 except Exception as exc:
-                    self.send_html(self.decorate_page(render_contracts_compact_page() + build_message("err", f"파일 삭제 중 오류가 났습니다: {exc}")), status=400)
+                    self.send_html(self.decorate_page(render_contracts_compact_page(month) + build_message("err", f"파일 삭제 중 오류가 났습니다: {exc}")), status=400)
                 return
             if path == "/admin/users/save":
                 if self.require_permission("admin") is None:
