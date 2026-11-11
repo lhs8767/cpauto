@@ -1171,6 +1171,9 @@ SALES_PAGE = """<!DOCTYPE html>
     .summary-invoice-input { width:100%; min-width:120px; border:1px solid #b9c6d8; border-radius:6px; padding:7px 8px; text-align:right; background:#fff; }
     .summary-invoice-number { text-align:left; }
     .summary-invoice-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .summary-invoice-edit { display:flex; align-items:center; gap:4px; flex:1 1 150px; }
+    .summary-invoice-edit input { width:105px; min-width:80px; border:1px solid #e0b51a; border-radius:5px; padding:5px 6px; text-align:right; background:#fff8b8; font:inherit; }
+    .summary-invoice-edit .confirm-action, .summary-invoice-actions .delete-btn { padding:5px 8px; font-size:11px; }
     .summary-invoice-detail { margin-top:6px; font-size:11px; }
     .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; }
     .history-details { margin-top:10px; font-size:12px; }
@@ -4294,7 +4297,12 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
         label, css = "확인 필요", "status-warn"
     form_id = f'invoice-{re.sub(r"\D", "", day)}'
     invoice_lines = "".join(
-        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
+        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} ·</span>'
+        f'<form class="summary-invoice-edit" method="post" action="/sales/confirm">'
+        f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
+        f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}">'
+        f'<input name="invoice_amount" value="{parse_int(item.get("amount", 0))}" inputmode="numeric" aria-label="계산서 발행금액">'
+        f'<button class="confirm-action" name="action" value="edit_invoice">수정</button></form>'
         f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 발주서를 삭제할까요?\')">'
         f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
         f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button class="delete-btn" name="action" value="delete_invoice">삭제</button></form></div>'
@@ -5175,6 +5183,18 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
         for number, amount in zip(numbers, amounts):
             invoices.append({"id": uuid.uuid4().hex[:12], "number": number, "amount": amount, "user": username, "at": now})
             history.append({"at": now, "user": username, "action": "발주서 추가", "reason": number, "changes": [{"field": "계산서 발행금액", "before": 0, "after": amount}]})
+    elif action == "edit_invoice":
+        invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
+        invoice = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
+        if invoice is None:
+            raise ValueError("수정할 발주서를 찾지 못했습니다.")
+        amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
+        if amount <= 0:
+            raise ValueError("수정할 계산서 발행금액을 입력해 주세요.")
+        before = parse_int(invoice.get("amount", 0))
+        if before != amount:
+            invoice.update({"amount": amount, "edited_by": username, "edited_at": now})
+            history.append({"at": now, "user": username, "action": "발주서 금액 수정", "reason": str(invoice.get("number", "")), "changes": [{"field": "계산서 발행금액", "before": before, "after": amount}]})
     elif action == "delete_invoice":
         invoice_id = form["invoice_id"].value.strip() if "invoice_id" in form else ""
         removed = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
