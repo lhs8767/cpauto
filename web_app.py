@@ -1174,6 +1174,10 @@ SALES_PAGE = """<!DOCTYPE html>
     .summary-invoice-edit { display:flex; align-items:center; gap:4px; flex:1 1 150px; }
     .summary-invoice-edit input { width:105px; min-width:80px; border:1px solid #e0b51a; border-radius:5px; padding:5px 6px; text-align:right; background:#fff8b8; font:inherit; }
     .summary-invoice-edit .confirm-action, .summary-invoice-actions .delete-btn { padding:5px 8px; font-size:11px; }
+    .matched-invoice-edit { display:none; }
+    .matched-invoice-edit.is-open { display:flex; }
+    .matched-invoice-unlock { width:22px; height:22px; border:1px solid transparent; border-radius:5px; padding:0; background:transparent; color:#98a2b3; cursor:pointer; font-size:12px; }
+    .matched-invoice-unlock:hover { border-color:#b9c6d8; background:#f8fafc; color:#1f4e79; }
     .summary-invoice-detail { margin-top:6px; font-size:11px; }
     .summary-invoice-detail summary { cursor:pointer; color:#1f4e79; font-weight:800; }
     .history-details { margin-top:10px; font-size:12px; }
@@ -1845,6 +1849,16 @@ SALES_PAGE = """<!DOCTYPE html>
       if (!reason || !reason.trim()) { alert("수정 사유를 입력해야 합니다."); return false; }
       form.querySelector('input[name="override_reason"]').value = reason.trim();
       return true;
+    }
+    function unlockMatchedInvoice(button) {
+      if (!confirm("매칭 완료된 발주서입니다. 금액을 수정하면 매칭 상태가 변경됩니다. 정말 수정하시겠습니까?")) return;
+      var row = button.closest(".summary-invoice-actions");
+      var form = row?.querySelector(".matched-invoice-edit");
+      if (!form) return;
+      row.querySelector(".matched-invoice-display")?.classList.add("not-shown");
+      button.classList.add("not-shown");
+      form.classList.add("is-open");
+      form.querySelector('input[name="invoice_amount"]')?.focus();
     }
     async function submitSalesAdjustments(form, event) {
       var submitterAction = event.submitter?.getAttribute("formaction") || "";
@@ -4298,11 +4312,17 @@ def render_confirmation_cells(day: str, sales_amount: int) -> tuple[str, int, bo
     else:
         label, css = "확인 필요", "status-warn"
     form_id = f'invoice-{re.sub(r"\D", "", day)}'
+    matched = confirmed and remaining == 0
     invoice_lines = "".join(
-        f'<div class="summary-invoice-actions"><span>{html.escape(str(item.get("number", "")))} ·</span>'
-        f'<form class="summary-invoice-edit" method="post" action="/sales/confirm">'
+        f'<div class="summary-invoice-actions">'
+        + (f'<span class="matched-invoice-display">{html.escape(str(item.get("number", "")))} · {parse_int(item.get("amount", 0)):,}원</span>'
+           f'<button class="matched-invoice-unlock" type="button" onclick="unlockMatchedInvoice(this)" title="금액 수정" aria-label="금액 수정">✎</button>'
+           if matched else f'<span>{html.escape(str(item.get("number", "")))} ·</span>')
+        + f'<form class="summary-invoice-edit{" matched-invoice-edit" if matched else ""}" method="post" action="/sales/confirm">'
         f'<input type="hidden" name="day" value="{html.escape(day, quote=True)}"><input type="hidden" name="sales_amount" value="{sales_amount}">'
         f'<input type="hidden" name="invoice_id" value="{html.escape(str(item.get("id", "")), quote=True)}">'
+        + ('<input type="hidden" name="confirm_matched_edit" value="1">' if matched else '')
+        +
         f'<input name="invoice_amount" value="{parse_int(item.get("amount", 0))}" inputmode="numeric" aria-label="계산서 발행금액">'
         f'<button class="confirm-action" name="action" value="edit_invoice">수정</button></form>'
         f'<form method="post" action="/sales/confirm" onsubmit="return confirm(\'이 발주서를 삭제할까요?\')">'
@@ -5190,6 +5210,8 @@ def save_sales_confirmation_form(form: cgi.FieldStorage, username: str) -> str:
         invoice = next((item for item in invoices if isinstance(item, dict) and item.get("id") == invoice_id), None)
         if invoice is None:
             raise ValueError("수정할 발주서를 찾지 못했습니다.")
+        if bool(record.get("confirmed")) and (form["confirm_matched_edit"].value.strip() if "confirm_matched_edit" in form else "") != "1":
+            raise ValueError("매칭 완료 건은 수정 여부를 다시 확인한 후 수정해 주세요.")
         amount = parse_int(form["invoice_amount"].value) if "invoice_amount" in form else 0
         if amount <= 0:
             raise ValueError("수정할 계산서 발행금액을 입력해 주세요.")
