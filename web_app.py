@@ -1847,6 +1847,8 @@ SALES_PAGE = """<!DOCTYPE html>
       return true;
     }
     async function submitSalesAdjustments(form, event) {
+      var submitterAction = event.submitter?.getAttribute("formaction") || "";
+      if (submitterAction && submitterAction !== form.getAttribute("action")) return true;
       event.preventDefault();
       if (!prepareSalesSave(form)) return false;
       if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
@@ -5320,7 +5322,13 @@ def save_sales_detail_form(form: cgi.FieldStorage, username: str) -> int:
         # 월 표식을 함께 보면 아직 입고 전인 미래 납품 건까지 잠기는 문제가 생긴다.
         is_confirmed = bool(isinstance(day_record, dict) and day_record.get("confirmed"))
         if row_changes and is_confirmed:
-            if not override_reason:
+            zero_qty_cancel = all(
+                str(change.get("field", "")).endswith(" 수량") and parse_int(change.get("after"), -1) == 0
+                for change in row_changes
+            )
+            if not override_reason and zero_qty_cancel:
+                override_reason = "취소 상품 수량 0 처리"
+            elif not override_reason:
                 raise ValueError("계산서 발행 확인 완료 건을 수정하려면 수정 사유가 필요합니다.")
             audit_by_day[day].extend(row_changes)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
