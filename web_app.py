@@ -425,14 +425,15 @@ def save_contract_details(contract_id: str, name: str, start_date: str, end_date
         raise ValueError("시작일과 종료일을 올바르게 입력해주세요.") from exc
     if start > end:
         raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
-    cleaned_amount = re.sub(r"[^0-9]", "", amount)
-    if not cleaned_amount:
-        raise ValueError("확인한 금액을 입력해주세요.")
+    cleaned_value = amount.strip()
+    if not cleaned_value:
+        raise ValueError("금액·할인율·조건을 입력해주세요.")
+    normalized_value = contract_amount_without_vat(cleaned_value)
     item.update({
         "extracted_title": cleaned_name,
         "extracted_start": start.strftime("%Y-%m-%d"),
         "extracted_end": end.strftime("%Y-%m-%d"),
-        "extracted_amount": f"{int(cleaned_amount):,}원",
+        "extracted_amount": normalized_value,
         "extraction_status": "수기 저장 완료",
         "extraction_version": "3",
         "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -443,7 +444,7 @@ def save_contract_details(contract_id: str, name: str, start_date: str, end_date
     CONTRACT_NAMES_PATH.write_text(json.dumps(names, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("contract_names", CONTRACT_NAMES_PATH)
     amounts = load_contract_manual_amounts()
-    amounts[contract_id] = str(int(cleaned_amount))
+    amounts[contract_id] = normalized_value
     CONTRACT_MANUAL_PATH.write_text(json.dumps(amounts, ensure_ascii=False, indent=2), encoding="utf-8")
     backup_file_to_supabase("contract_manual_amounts", CONTRACT_MANUAL_PATH)
     return str(item.get("month", ""))
@@ -5486,15 +5487,13 @@ def render_contracts_page() -> str:
 
 def contract_amount_without_vat(value: str) -> str:
     text = str(value or "").strip()
-    if not text or "%" in text:
+    if not text:
         return text
-    match = re.search(r"([\d,]+)\s*원", text)
-    if not match and re.fullmatch(r"[\d,]+", text):
-        match = re.fullmatch(r"([\d,]+)", text)
+    match = re.fullmatch(r"\s*([\d,]+)\s*원?\s*(?:\(\s*VAT\s*(포함|미포함|별도)\s*\))?\s*", text, re.IGNORECASE)
     if not match:
         return text
     amount = int(match.group(1).replace(",", ""))
-    if "VAT 포함" in text.upper():
+    if str(match.group(2) or "") == "포함":
         amount = round(amount / 1.1)
     return f"{amount:,}원"
 
@@ -5505,7 +5504,7 @@ def contract_amount_total(rows: list[dict[str, object]], saved: dict[str, str]) 
         value = contract_amount_without_vat(saved.get(str(row.get("id", "")), "").strip() or str(row.get("amount", "")))
         if "%" in value:
             continue
-        match = re.search(r"([\d,]+)\s*원", value)
+        match = re.fullmatch(r"([\d,]+)원", value)
         if match:
             total += int(match.group(1).replace(",", ""))
     return total
@@ -5549,7 +5548,7 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
             extracted_summary = " · ".join(part for part in extracted_parts if part)
             status_text = f"{extraction_status}: {extracted_summary}" if extracted_summary else extraction_status
             file_label = f'{html.escape(str(item.get("name", "")))}<small style="display:block;margin-top:4px;color:{status_color}">{html.escape(status_text)}</small>'
-            item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" inputmode="numeric" value="{html.escape(amount, quote=True)}" placeholder="금액 직접 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 금액을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
+            item_rows.append(f'<div class="ur"><strong>{file_label}</strong><span class="uploaded-at">{html.escape(str(item.get("uploaded_at", "")))}</span><div class="upload-actions"><form class="amount-form" method="post" action="/contracts/amount/save"><input type="hidden" name="contract_id" value="{html.escape(contract_id, quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}"><input name="amount" value="{html.escape(amount, quote=True)}" placeholder="금액·할인율·조건 입력"><button>저장</button></form><div class="file-actions"><a href="/contracts/download?id={quote(str(item.get("id", "")))}">원본 받기</a><form method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약 파일과 입력 조건을 삭제할까요?\');"><input type="hidden" name="file_id" value="{html.escape(str(item.get("id", "")), quote=True)}"><button type="submit">삭제</button></form></div></div></div>')
         upload_groups.append(f'<details class="upload-month" open><summary>{html.escape(month)} 계약 파일 · {len(items)}개</summary>{"".join(item_rows)}</details>')
     upload_rows = "".join(upload_groups)
     rows = [
@@ -5591,14 +5590,14 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         more_label = "기간 입력" if period_missing else "자세히"
         facts="".join(f'<div><span>{html.escape(k)}</span><strong>{html.escape(v)}</strong></div>' for k,v in r["facts"])
         if r.get("file_id"):
-            raw_amount = re.sub(r"[^0-9]", "", sv or str(r["amount"]))
+            raw_amount = sv or str(r["amount"])
             editor = (
                 f'<form class="contract-edit" method="post" action="/contracts/details/save">'
                 f'<input type="hidden" name="contract_id" value="{html.escape(r["id"], quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}">'
                 f'<label>행사·계약명<input name="name" value="{html.escape(title, quote=True)}" required></label>'
                 f'<label>시작일<input type="date" name="start_date" value="{html.escape(str(r.get("start_date", "")), quote=True)}" required></label>'
                 f'<label>종료일<input type="date" name="end_date" value="{html.escape(str(r.get("end_date", "")), quote=True)}" required></label>'
-                f'<label>금액(VAT 미포함)<input name="amount" inputmode="numeric" value="{html.escape(raw_amount, quote=True)}" required></label>'
+                f'<label>금액·할인율·조건<input name="amount" value="{html.escape(raw_amount, quote=True)}" placeholder="예: 5% 또는 건당 1,000원" required></label>'
                 f'<button type="submit">수정 저장</button></form>'
                 f'<form class="contract-delete" method="post" action="/contracts/delete" onsubmit="return confirm(\'이 계약과 원본 파일을 삭제할까요?\');">'
                 f'<input type="hidden" name="file_id" value="{html.escape(str(r["file_id"]), quote=True)}"><input type="hidden" name="month" value="{html.escape(selected_month, quote=True)}">'
@@ -5626,7 +5625,7 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
     '''
     page = page.replace("</style>", compact_css + "</style>", 1)
     page = page.replace('<div class="ul"></div>', '')
-    page = page.replace('<span style="text-align:right">실제 금액</span>', '<span style="text-align:right">실제 금액<br>(VAT 미포함)</span>')
+    page = page.replace('<span style="text-align:right">실제 금액</span>', '<span style="text-align:right">금액·할인율·조건</span>')
     total_editor = (
         f'<span>확인된 청구액<br>(VAT 미포함)</span><strong>{confirmed_total_display:,}원</strong>'
         f'<form method="post" action="/contracts/total/save" style="display:flex;gap:5px;margin-top:7px;">'
