@@ -137,14 +137,14 @@ def restore_file_from_supabase(file_key: str, target_path: Path, force: bool = F
     target_path.write_bytes(base64.b64decode(content))
 
 
-def backup_file_to_supabase(file_key: str, source_path: Path) -> None:
+def backup_file_to_supabase(file_key: str, source_path: Path) -> bool:
     if not source_path.exists():
-        return
+        return False
     body = {
         "file_key": file_key,
         "content_base64": base64.b64encode(source_path.read_bytes()).decode("ascii"),
     }
-    supabase_request("POST", "/rest/v1/app_files?on_conflict=file_key", body)
+    return bool(supabase_request("POST", "/rest/v1/app_files?on_conflict=file_key", body))
 
 
 def restore_sales_files_from_supabase(force: bool = False) -> None:
@@ -433,7 +433,7 @@ def save_contract_details(contract_id: str, name: str, start_date: str, end_date
         "extracted_start": start.strftime("%Y-%m-%d"),
         "extracted_end": end.strftime("%Y-%m-%d"),
         "extracted_amount": f"{int(cleaned_amount):,}원",
-        "extraction_status": "수기 수정",
+        "extraction_status": "수기 저장 완료",
         "extraction_version": "3",
         "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
@@ -557,7 +557,9 @@ def save_contract_upload(file_item: cgi.FieldStorage, selected_month: str = "") 
     stored_path.parent.mkdir(parents=True, exist_ok=True)
     stored_path.write_bytes(content)
     file_key = f"contract_file_{file_id}"
-    backup_file_to_supabase(file_key, stored_path)
+    if not backup_file_to_supabase(file_key, stored_path):
+        stored_path.unlink(missing_ok=True)
+        raise ValueError("원본 계약 파일을 영구 저장하지 못했습니다. 잠시 후 다시 올려주세요.")
     uploaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     selected_month = selected_month.strip()
     if selected_month and not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", selected_month):
@@ -5487,6 +5489,8 @@ def contract_amount_without_vat(value: str) -> str:
     if not text or "%" in text:
         return text
     match = re.search(r"([\d,]+)\s*원", text)
+    if not match and re.fullmatch(r"[\d,]+", text):
+        match = re.fullmatch(r"([\d,]+)", text)
     if not match:
         return text
     amount = int(match.group(1).replace(",", ""))
@@ -5516,7 +5520,16 @@ def render_contracts_compact_page(selected_month: str = "") -> str:
         selected_month = available_months[0]
     uploads = [item for item in uploads if (str(item.get("month", "")).strip() or str(item.get("uploaded_at", ""))[:7]) == selected_month]
     uploads_by_month: dict[str, list[dict[str, str]]] = defaultdict(list)
-    pending_uploads = [item for item in uploads if str(item.get("extraction_status", "")) != "자동 반영"]
+    pending_uploads = [
+        item for item in uploads
+        if str(item.get("extraction_status", "")) not in {"자동 반영", "수기 저장 완료"}
+        and not (
+            saved.get(f'upload_{item.get("id", "")}', "").strip()
+            and str(item.get("extracted_title", "")).strip()
+            and str(item.get("extracted_start", "")).strip()
+            and str(item.get("extracted_end", "")).strip()
+        )
+    ]
     for item in pending_uploads:
         uploads_by_month[str(item.get("month", "")).strip() or str(item.get("uploaded_at", ""))[:7] or "미분류"].append(item)
     upload_groups = []
