@@ -4364,6 +4364,7 @@ def render_locked_price_editor(row_no: int, unit_price: int, edit_record: dict[s
 
 def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
     records = sorted(load_sales_po_rechecks(), key=lambda item: (str(item.get("status")) == "complete", str(item.get("day", "")), str(item.get("po_no", ""))))
+    pending_count = sum(1 for item in records if str(item.get("status")) != "complete")
     rows = []
     for item in records:
         complete = str(item.get("status")) == "complete"
@@ -4388,7 +4389,7 @@ def render_po_recheck_panel(po_rows: list[list[object]]) -> str:
     list_html = "".join(rows) or '<div class="po-recheck-empty">등록된 PO 금액 재확인 항목이 없습니다.</div>'
     return (
         '<section class="po-recheck-box"><div class="po-recheck-guide"><strong>PO 금액 재확인</strong><span>검색창에 PO 번호를 입력해 조회한 뒤 ‘금액 재확인 추가’를 누르세요.</span></div>'
-        f'<details class="po-recheck-list"><summary>확인용 목록 {len(records)}건 보기</summary>{list_html}</details></section>'
+        f'<details class="po-recheck-list"><summary>확인용 목록 {pending_count}건 보기</summary>{list_html}</details></section>'
     )
 
 
